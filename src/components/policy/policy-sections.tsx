@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Badge, Card } from "@/components/ui";
 import {
   coverageName,
@@ -24,7 +25,16 @@ const dateTime = (iso: string) =>
 
 /* ------------------------------ Summary ------------------------------ */
 
-export function PolicySummary({ view, actions }: { view: View; actions?: React.ReactNode }) {
+export function PolicySummary({
+  view,
+  actions,
+  policyBasePath,
+}: {
+  view: View;
+  actions?: React.ReactNode;
+  /** Where policy links go for this role, e.g. "/broker/policies". */
+  policyBasePath: string;
+}) {
   const due = view.balanceCents;
   return (
     <div className="flex flex-wrap items-start justify-between gap-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
@@ -40,6 +50,22 @@ export function PolicySummary({ view, actions }: { view: View; actions?: React.R
           Term: {formatDate(view.startDate)} to {formatDate(view.endDate)} ({view.termDays} days)
           {view.cancelledEffective && <> · Cancelled effective {formatDate(view.cancelledEffective)}</>}
         </p>
+        {view.renewedFrom && (
+          <p className="mt-1 text-sm text-slate-500">
+            Renewal of{" "}
+            <Link className="text-indigo-600 underline" href={`${policyBasePath}/${view.renewedFrom.id}`}>
+              {view.renewedFrom.policyNumber}
+            </Link>
+          </p>
+        )}
+        {view.renewal && (
+          <p className="mt-1 text-sm text-slate-500">
+            Renewed for the following term as{" "}
+            <Link className="text-indigo-600 underline" href={`${policyBasePath}/${view.renewal.id}`}>
+              {view.renewal.policyNumber}
+            </Link>
+          </p>
+        )}
         {view.application && (
           <p className="mt-1 text-sm text-slate-500">
             Application signed by {view.application.signerName} on {dateTime(view.application.signedAt)} through

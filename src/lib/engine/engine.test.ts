@@ -3,6 +3,9 @@ import {
   addOneYear,
   allLines,
   allocateRefund,
+  claimPayout,
+  commissionFor,
+  coveragesToRenew,
   coveragesInForceOn,
   daysBetween,
   formatUSD,
@@ -259,5 +262,38 @@ describe("allocateRefund", () => {
 
   it("reports what it couldn't refund", () => {
     expect(allocateRefund(200_000, payments).shortfallCents).toBe(200_000 - 176_300);
+  });
+});
+
+describe("commission", () => {
+  it("is the rate times the premium, rounded to the cent", () => {
+    expect(commissionFor(109_500, 1000)).toBe(10_950);
+    expect(commissionFor(66_805, 1000)).toBe(6_681); // 6680.5 rounds away from zero
+    expect(commissionFor(0, 1000)).toBe(0);
+  });
+
+  it("claws back exactly what a reversed line earned", () => {
+    for (const cents of [66_800, 66_805, 1, 99_999]) {
+      expect(commissionFor(cents, 1000) + commissionFor(-cents, 1000)).toBe(0);
+    }
+  });
+});
+
+describe("claim payout", () => {
+  it("is the approved loss less the deductible, capped at the limit, never negative", () => {
+    expect(claimPayout(350_000, 50_000, 100_000_000)).toBe(300_000);
+    expect(claimPayout(9_000_000, 50_000, 5_000_000)).toBe(5_000_000);
+    expect(claimPayout(30_000, 50_000, 5_000_000)).toBe(0);
+  });
+});
+
+describe("renewal", () => {
+  it("carries forward only what is in force on the last day of the term", () => {
+    const state = replay([
+      issue([GL, PROP]),
+      addCyber("2026-11-01"),
+      { id: "drop", event: { type: "COVERAGE_CHANGE", effectiveDate: "2027-01-01", add: [], remove: ["PROP"] } },
+    ]);
+    expect(coveragesToRenew(state).map((c) => c.code).sort()).toEqual(["CYBER", "GL"]);
   });
 });

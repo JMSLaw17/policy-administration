@@ -6,3 +6,4 @@ export * from "./money";
 export * from "./refunds";
 export * from "./replay";
 export * from "./types";
+export * from "./extensions";

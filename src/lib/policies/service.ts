@@ -4,6 +4,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import {
   addOneYear,
   allLines,
+  COMMISSION_RATE_BPS,
   coverageName,
   formatDate,
   getCoverage,
@@ -84,6 +85,8 @@ export async function issuePolicy(input: {
   startDate: ISODate;
   coverageCodes: string[];
   userId: string;
+  /** Set when this policy renews an earlier one. */
+  renewedFromId?: string;
 }) {
   const event: PolicyEvent = {
     type: "ISSUE",
@@ -100,6 +103,8 @@ export async function issuePolicy(input: {
         policyNumber: await nextPolicyNumber(tx, input.startDate),
         customerId: input.customerId,
         productCode: "SBP",
+        commissionRateBps: COMMISSION_RATE_BPS,
+        renewedFromId: input.renewedFromId ?? null,
         startDate: toJSDate(event.startDate),
         endDate: toJSDate(event.endDate),
       },
@@ -376,7 +381,7 @@ function entryData(
 /** The wording of a statement line. */
 function describe(line: PremiumLine, event: PolicyEvent): string {
   const name = coverageName(line.coverageCode);
-  if (event.type === "ISSUE") return `${name}: policy issued, full term`;
+  if (event.type === "ISSUE") return `${name}: full term`;
   if (event.type === "CANCELLATION") {
     return `${name}: unused days after cancellation on ${formatDate(event.effectiveDate)}`;
   }

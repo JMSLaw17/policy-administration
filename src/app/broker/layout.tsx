@@ -6,6 +6,7 @@ export default async function BrokerLayout({ children }: LayoutProps<"/broker">)
   return (
     <AppShell user={user} nav={[
         { href: "/broker", label: "Customers" },
+        { href: "/broker/commissions", label: "Commissions" },
         { href: "/broker/integrations", label: "Integration log" },
       ]}>
       {children}

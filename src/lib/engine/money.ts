@@ -32,3 +32,11 @@ export function formatUSD(cents: number): string {
 export function signedUSD(cents: number): string {
   return cents > 0 ? `+${formatUSD(cents)}` : formatUSD(cents);
 }
+
+/** Reads a typed dollar amount such as "4,000" or "$4000.50" into cents. Null if it isn't one. */
+export function parseUSD(input: string): number | null {
+  const cleaned = input.replace(/[$,\s]/g, "");
+  if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) return null;
+  const [dollars, cents = ""] = cleaned.split(".");
+  return Number(dollars) * 100 + Number(cents.padEnd(2, "0"));
+}

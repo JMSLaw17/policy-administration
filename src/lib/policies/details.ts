@@ -33,12 +33,15 @@ export async function updateCustomerDetails(customerId: string, next: CustomerDe
       where: { id: customerId },
       include: { policies: { select: { id: true } } },
     });
-    const changes = (Object.keys(LABELS) as (keyof CustomerDetails)[])
-      .filter((key) => current[key] !== next[key])
-      .map((key) => ({ field: LABELS[key], from: current[key], to: next[key] }));
+    const changedKeys = (Object.keys(LABELS) as (keyof CustomerDetails)[]).filter(
+      (key) => current[key] !== next[key],
+    );
+    const changes = changedKeys.map((key) => ({ field: LABELS[key], from: current[key], to: next[key] }));
     if (changes.length === 0) return { changed: 0 };
 
-    await tx.customer.update({ where: { id: customerId }, data: next });
+    // Write only the fields this function owns, whatever else the caller passed.
+    const data = Object.fromEntries(changes.map((c, i) => [changedKeys[i], c.to]));
+    await tx.customer.update({ where: { id: customerId }, data });
     for (const policy of current.policies) {
       await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${policy.id} FOR UPDATE`;
       const last = await tx.policyTransaction.aggregate({ where: { policyId: policy.id }, _max: { seq: true } });

@@ -6,7 +6,7 @@ A demo platform for managing commercial insurance policies, built for a 48-hour 
 - **Plan:** [PLAN.md](PLAN.md)
 - **Decision log:** [DECISIONS.md](DECISIONS.md)
 
-> This README grows as the build progresses. Status as of 2026-11-11: the policy workflow, Stripe payments and refunds, and customer details editing are built and tested. DocuSign signing is built and tested locally against the sandbox.
+> This README grows as the build progresses. Status as of 2026-11-11: the policy workflow, Stripe payments and refunds, DocuSign signing, customer details editing, and the three extensions (claims, renewals, broker commissions) are built and tested.
 
 ## Demo logins
 
@@ -24,6 +24,8 @@ All data is fictional. Both accounts use the password `demo-password`.
 | Stripe (test mode): payments, webhooks, refunds | Live in test mode, tested locally and on the deployed app |
 | DocuSign (developer sandbox): e-signing the application | Live in the sandbox, tested locally |
 | Carrier, rating, underwriting | Simulated (flat rate table in this repo) |
+| Claim payments | Simulated (recorded in the app, no money moves) |
+| Paying commission to the broker | Not modelled (commission is calculated and shown only) |
 
 ## Run it locally
 
@@ -38,7 +40,7 @@ npm run db:seed             # create the demo logins
 npm run dev
 ```
 
-Other commands: `npm test` (unit tests), `npm run typecheck`, `npm run lint`.
+Other commands: `npm test` (unit tests, plus integration tests against a local `policy_admin_test` database that is created automatically), `npm run typecheck`, `npm run lint`.
 
 ## Stack
 

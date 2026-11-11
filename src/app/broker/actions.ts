@@ -13,6 +13,7 @@ import { DocuSignError, isDocuSignConfigured } from "@/lib/integrations/docusign
 import { issueFromApplication, sendApplication, withdrawApplication } from "@/lib/policies/applications";
 import { updateCustomerDetails } from "@/lib/policies/details";
 import { refundCredit } from "@/lib/policies/payments";
+import { renewPolicy } from "@/lib/policies/renewals";
 import {
   applyChange,
   issuePolicy,
@@ -240,4 +241,19 @@ async function settleCredit(policyId: string, transactionId?: string): Promise<s
 function revalidatePolicy(policyId: string) {
   revalidatePath(`/broker/policies/${policyId}`);
   revalidatePath(`/portal/policies/${policyId}`);
+}
+
+/* ------------------------------ Renew ------------------------------ */
+
+export async function renewPolicyAction(policyId: string): Promise<FormState> {
+  const user = await requireUser("BROKER");
+  let renewalId: string;
+  try {
+    renewalId = (await renewPolicy(policyId, user.id)).id;
+  } catch (error) {
+    if (error instanceof PolicyRuleError) return { error: error.message };
+    throw error;
+  }
+  revalidatePolicy(policyId);
+  redirect(`/broker/policies/${renewalId}`);
 }

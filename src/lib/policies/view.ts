@@ -72,6 +72,8 @@ export async function loadPolicyView(policyId: string) {
       payments: { orderBy: { createdAt: "asc" } },
       refunds: { orderBy: { createdAt: "asc" } },
       application: true,
+      renewedFrom: { select: { id: true, policyNumber: true } },
+      renewal: { select: { id: true, policyNumber: true } },
     },
   });
   if (!policy) return null;
@@ -128,7 +130,7 @@ export async function loadPolicyView(policyId: string) {
       title = `Correction to #${corrected.seq}`;
       summary = describeCorrection(previous.data, event);
     } else if (event) {
-      title = titleFor(event);
+      title = event.type === "ISSUE" && policy.renewedFrom ? "Policy renewed" : titleFor(event);
       summary = summarise(event);
     } else if (t.type === "DETAILS_CHANGE") {
       summary = describeDetails(t.data);
@@ -179,6 +181,8 @@ export async function loadPolicyView(policyId: string) {
           envelopeId: policy.application.docusignEnvelopeId,
         }
       : null,
+    renewedFrom: policy.renewedFrom,
+    renewal: policy.renewal,
     coverage: state.intervals,
     statement,
     history,

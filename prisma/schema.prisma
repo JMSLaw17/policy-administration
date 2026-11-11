@@ -22,7 +22,9 @@ model User {
   customer     Customer? @relation(fields: [customerId], references: [id])
   createdAt    DateTime  @default(now())
 
-  transactions PolicyTransaction[]
+  transactions  PolicyTransaction[]
+  claimsFiled   Claim[]             @relation("ClaimsFiled")
+  claimsDecided Claim[]             @relation("ClaimsDecided")
 }
 
 model Customer {
@@ -89,6 +91,13 @@ model Policy {
   status             PolicyStatus @default(ACTIVE)
   cancelledEffective DateTime?    @db.Date
   createdAt          DateTime     @default(now())
+  /// The broker's commission rate in basis points (1000 = 10%), fixed when
+  /// the policy is issued so later rate changes don't rewrite the past.
+  commissionRateBps  Int          @default(1000)
+  /// For a renewal: the policy whose term this one follows.
+  renewedFromId      String?      @unique
+  renewedFrom        Policy?      @relation("Renewal", fields: [renewedFromId], references: [id])
+  renewal            Policy?      @relation("Renewal")
 
   transactions PolicyTransaction[]
   ledger       LedgerEntry[]
@@ -96,6 +105,41 @@ model Policy {
   refunds      Refund[]
   events       IntegrationEvent[]
   application  Application?
+  claims       Claim[]
+}
+
+enum ClaimStatus {
+  SUBMITTED
+  APPROVED
+  DENIED
+  PAID
+}
+
+/// A request to be paid for a loss. Claims money flows from the insurer to
+/// the customer, so it is kept apart from the premium statement.
+model Claim {
+  id                String      @id @default(cuid())
+  claimNumber       String      @unique
+  policyId          String
+  policy            Policy      @relation(fields: [policyId], references: [id])
+  coverageCode      String
+  lossDate          DateTime    @db.Date
+  description       String
+  claimedCents      Int
+  status            ClaimStatus @default(SUBMITTED)
+  /// Set when approved: the loss the broker accepts, and the terms applied.
+  approvedLossCents Int?
+  deductibleCents   Int?
+  limitCents        Int?
+  payoutCents       Int?
+  decisionNote      String?
+  filedById         String
+  filedBy           User        @relation("ClaimsFiled", fields: [filedById], references: [id])
+  filedAt           DateTime    @default(now())
+  decidedById       String?
+  decidedBy         User?       @relation("ClaimsDecided", fields: [decidedById], references: [id])
+  decidedAt         DateTime?
+  paidAt            DateTime?
 }
 
 enum TransactionType {

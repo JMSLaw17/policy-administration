@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { ClaimsCard } from "@/components/claims/claims-card";
 import { PaymentsCard } from "@/components/policy/payments-card";
 import { PayCard } from "@/components/portal/pay-card";
 import { CoverageCard, HistoryCard, PolicySummary, StatementCard } from "@/components/policy/policy-sections";
@@ -6,6 +7,7 @@ import { BackLink } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { isStripeConfigured } from "@/lib/integrations/stripe";
+import { claimsForPolicy } from "@/lib/policies/claims";
 import { reconcilePending } from "@/lib/policies/payments";
 import { loadPolicyView } from "@/lib/policies/view";
 
@@ -22,16 +24,19 @@ export default async function PortalPolicyPage(props: PageProps<"/portal/policie
   if (isStripeConfigured()) await reconcilePending(id);
   const view = await loadPolicyView(id);
   if (!view) notFound();
+  const claims = await claimsForPolicy(id);
+  const everCovered = [...new Set(view.statement.flatMap((r) => (r.coverageCode ? [r.coverageCode] : [])))];
   const hasPendingPayment = view.payments.some((p) => p.status === "PENDING");
 
   return (
     <div className="space-y-6">
       <BackLink href="/portal">My policies</BackLink>
-      <PolicySummary view={view} />
+      <PolicySummary view={view} policyBasePath="/portal/policies" />
       <PayCard policyId={view.id} amountDueCents={view.balanceCents} hasPendingPayment={hasPendingPayment} />
       <CoverageCard view={view} />
       <StatementCard view={view} />
       <PaymentsCard view={view} />
+      <ClaimsCard policyId={view.id} claims={claims} coverageCodes={everCovered} canDecide={false} />
       <HistoryCard view={view} />
     </div>
   );
