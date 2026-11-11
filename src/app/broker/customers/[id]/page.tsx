@@ -4,6 +4,7 @@ import { BackLink, Badge, Card } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { formatDate, fromJSDate, todayISO } from "@/lib/engine";
+import { EditDetailsForm } from "./edit-details-form";
 import { IssuePolicyForm } from "./issue-policy-form";
 
 export const metadata = { title: "Customer" };
@@ -53,6 +54,21 @@ export default async function CustomerPage(props: PageProps<"/broker/customers/[
             ))}
           </ul>
         )}
+      </Card>
+
+      <Card title="Edit details" description="Business name, contact, and address.">
+        <EditDetailsForm
+          customerId={customer.id}
+          details={{
+            businessName: customer.businessName,
+            contactName: customer.contactName,
+            email: customer.email,
+            addressLine1: customer.addressLine1,
+            city: customer.city,
+            state: customer.state,
+            postalCode: customer.postalCode,
+          }}
+        />
       </Card>
 
       <Card

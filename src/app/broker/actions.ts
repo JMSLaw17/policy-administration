@@ -9,6 +9,7 @@ import { db } from "@/lib/db";
 import { DEMO_PASSWORD } from "@/lib/demo";
 import { COVERAGES, formatUSD, isISODate, PolicyRuleError } from "@/lib/engine";
 import { StripeNotConfiguredError } from "@/lib/integrations/stripe";
+import { updateCustomerDetails } from "@/lib/policies/details";
 import { refundCredit } from "@/lib/policies/payments";
 import {
   applyChange,
@@ -59,6 +60,25 @@ export async function createCustomer(_prev: FormState, formData: FormData): Prom
     },
   });
   redirect(`/broker/customers/${customer.id}`);
+}
+
+export type DetailsState = { error?: string; saved?: string } | undefined;
+
+export async function updateCustomerAction(_prev: DetailsState, formData: FormData): Promise<DetailsState> {
+  const user = await requireUser("BROKER");
+  const customerId = String(formData.get("customerId") ?? "");
+  const parsed = CustomerSchema.safeParse(Object.fromEntries(formData));
+  if (!customerId || !parsed.success) {
+    return { error: parsed.success ? "Customer not found." : parsed.error.issues[0].message };
+  }
+  const { changed } = await updateCustomerDetails(customerId, parsed.data, user.id);
+  revalidatePath(`/broker/customers/${customerId}`);
+  return {
+    saved:
+      changed === 0
+        ? "Nothing changed."
+        : "Saved. The change is recorded in the history of each of this customer's policies.",
+  };
 }
 
 /* ------------------------------ Issue ------------------------------ */

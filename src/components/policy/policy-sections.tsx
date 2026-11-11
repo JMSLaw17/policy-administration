@@ -291,6 +291,12 @@ export function HistoryCard({
                   {entry.type === "CORRECTION" && <Badge tone="indigo">Correction</Badge>}
                 </div>
                 <p className="mt-1 text-sm text-slate-700">{entry.summary}</p>
+                {entry.explanation && (
+                  <p className="mt-2 rounded-md bg-indigo-50 px-3 py-2 text-sm text-slate-800" data-testid="explanation">
+                    <span className="font-medium">What this means: </span>
+                    {entry.explanation}
+                  </p>
+                )}
                 {entry.reason && <p className="mt-1 text-sm text-slate-500">Reason: {entry.reason}</p>}
                 <p className="mt-1 text-xs text-slate-500">
                   Recorded {dateTime(entry.createdAt)} by {entry.createdBy}

@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import {
   coverageName,
   formatDate,
+  formatUSD,
   fromJSDate,
   replay,
   type ISODate,
@@ -53,6 +54,8 @@ export type HistoryEntry = {
   statementLines: number[];
   correctsSeq: number | null;
   supersededBySeq: number | null;
+  /** For corrections: what changed and why the amount moved, in plain English. */
+  explanation: string | null;
   /** The event as it currently stands, if this entry can be corrected. */
   correctable: PolicyEvent | null;
 };
@@ -143,6 +146,7 @@ export async function loadPolicyView(policyId: string) {
       // Premium only. A refund this action triggered is money moving, not a change in what's owed.
       netCents: rows.filter((r) => r.kind !== "REFUND").reduce((sum, r) => sum + r.amountCents, 0),
       statementLines: rows.map((r) => r.line),
+      explanation: t.type === "CORRECTION" ? explainCorrection(rows) : null,
       correctsSeq: corrected?.seq ?? null,
       supersededBySeq: superseding?.seq ?? null,
       correctable: slot ? slot.event : null,
@@ -243,4 +247,58 @@ function describeCorrection(before: PolicyEvent, after: PolicyEvent): string {
 function describeDetails(data: unknown): string {
   const changes = (data as { changes?: { field: string; from: string; to: string }[] })?.changes ?? [];
   return changes.map((c) => `${c.field} changed from "${c.from}" to "${c.to}".`).join(" ");
+}
+
+/**
+ * Explains a correction's money effect from its statement lines, coverage by
+ * coverage: how many days changed, what the premium was and is now, and the
+ * net result for the customer.
+ */
+function explainCorrection(rows: StatementRow[]): string | null {
+  const premium = rows.filter((r) => r.kind !== "REFUND" && r.calc && r.coverageCode);
+  if (premium.length === 0) return null;
+
+  const sentences: string[] = [];
+  const codes = [...new Set(premium.map((r) => r.coverageCode!))];
+  for (const code of codes) {
+    const name = coverageName(code);
+    // A reversal carries the original line's inputs, with the opposite sign.
+    const before = premium.filter((r) => r.coverageCode === code && r.kind === "REVERSAL");
+    const after = premium.filter((r) => r.coverageCode === code && r.kind !== "REVERSAL");
+    const oldAmount = -before.reduce((s, r) => s + r.amountCents, 0);
+    const newAmount = after.reduce((s, r) => s + r.amountCents, 0);
+    const oldDays = before.reduce((s, r) => s + r.calc!.days, 0);
+    const newDays = after.reduce((s, r) => s + r.calc!.days, 0);
+    const word = (cents: number) => (cents < 0 ? "credit" : "charge");
+
+    if (before.length && after.length) {
+      const diff = newDays - oldDays;
+      const { annualPremiumCents, termDays } = after[0].calc!;
+      const daily =
+        annualPremiumCents % termDays === 0 ? ` at ${formatUSD(annualPremiumCents / termDays)} a day` : "";
+      const days =
+        diff === 0
+          ? `the same ${newDays} days`
+          : `${Math.abs(diff)} ${diff > 0 ? "more" : "fewer"} ${Math.abs(diff) === 1 ? "day" : "days"} (${newDays} instead of ${oldDays})${daily}`;
+      sentences.push(
+        `${name} now counts ${days}, so its ${word(newAmount)} changes from ${formatUSD(Math.abs(oldAmount))} to ${formatUSD(Math.abs(newAmount))}.`,
+      );
+    } else if (after.length) {
+      sentences.push(`${name} now has a ${word(newAmount)} of ${formatUSD(Math.abs(newAmount))} for ${newDays} days.`);
+    } else {
+      sentences.push(`The ${formatUSD(Math.abs(oldAmount))} ${word(oldAmount)} for ${name} no longer applies.`);
+    }
+  }
+
+  const net = premium.reduce((s, r) => s + r.amountCents, 0);
+  const refunded = rows.filter((r) => r.kind === "REFUND").reduce((s, r) => s + r.amountCents, 0);
+  if (net > 0) sentences.push(`In total, ${formatUSD(net)} more is owed.`);
+  else if (net < 0) {
+    sentences.push(
+      refunded > 0
+        ? `In total, ${formatUSD(-net)} less is owed, and ${formatUSD(refunded)} was refunded to the card.`
+        : `In total, ${formatUSD(-net)} less is owed.`,
+    );
+  } else sentences.push("The total owed doesn't change.");
+  return sentences.join(" ");
 }
