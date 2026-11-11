@@ -93,7 +93,7 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
       amount: due,
       currency: "usd",
       // Card settles at once; a bank debit shows a real "pending" state first.
-      payment_method_types: ["card", "us_bank_account"],
+      allowed_payment_method_types: ["card", "us_bank_account"],
       description: `Premium for policy ${policy.policyNumber}`,
       metadata: { paymentId: payment.id, policyId, policyNumber: policy.policyNumber },
     },
