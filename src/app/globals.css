@@ -9,3 +9,26 @@ body {
   background: #f8fafc;
   color: #0f172a;
 }
+
+/* Everything clickable gets a pointer; disabled controls don't. */
+@layer base {
+  a[href],
+  button,
+  [role="button"],
+  summary,
+  select,
+  label:has(input[type="checkbox"]),
+  label:has(input[type="radio"]),
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="date"] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  select:disabled,
+  input:disabled,
+  label:has(input:disabled) {
+    cursor: not-allowed;
+  }
+}
