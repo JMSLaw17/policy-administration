@@ -7,7 +7,9 @@ import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { DEMO_PASSWORD } from "@/lib/demo";
-import { COVERAGES, isISODate, PolicyRuleError } from "@/lib/engine";
+import { COVERAGES, formatUSD, isISODate, PolicyRuleError } from "@/lib/engine";
+import { StripeNotConfiguredError } from "@/lib/integrations/stripe";
+import { refundCredit } from "@/lib/policies/payments";
 import {
   applyChange,
   issuePolicy,
@@ -122,36 +124,65 @@ const ChangeSchema: z.ZodType<ChangeRequest> = z.discriminatedUnion("kind", [
 ]);
 
 export type ChangeResult =
-  | { ok: true; preview: ChangePreview }
+  | { ok: true; preview: ChangePreview; notice?: string }
   | { ok: false; error: string };
 
 /** Step 1: show the broker what the change will do to the statement. */
 export async function previewChangeAction(policyId: string, request: unknown): Promise<ChangeResult> {
   await requireUser("BROKER");
-  return run(request, (parsed) => previewChange(policyId, parsed));
-}
-
-/** Step 2: save it. */
-export async function applyChangeAction(policyId: string, request: unknown): Promise<ChangeResult> {
-  const user = await requireUser("BROKER");
-  const result = await run(request, async (parsed) => (await applyChange(policyId, parsed, user.id)).preview);
-  if (result.ok) {
-    revalidatePath(`/broker/policies/${policyId}`);
-    revalidatePath(`/portal/policies/${policyId}`);
-  }
-  return result;
-}
-
-async function run(
-  request: unknown,
-  fn: (parsed: ChangeRequest) => Promise<ChangePreview>,
-): Promise<ChangeResult> {
   const parsed = ChangeSchema.safeParse(request);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
   try {
-    return { ok: true, preview: await fn(parsed.data) };
+    return { ok: true, preview: await previewChange(policyId, parsed.data) };
   } catch (error) {
     if (error instanceof PolicyRuleError) return { ok: false, error: error.message };
     throw error;
   }
+}
+
+/** Step 2: save it, then refund any credit it leaves the customer with. */
+export async function applyChangeAction(policyId: string, request: unknown): Promise<ChangeResult> {
+  const user = await requireUser("BROKER");
+  const parsed = ChangeSchema.safeParse(request);
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+
+  let result: Awaited<ReturnType<typeof applyChange>>;
+  try {
+    result = await applyChange(policyId, parsed.data, user.id);
+  } catch (error) {
+    if (error instanceof PolicyRuleError) return { ok: false, error: error.message };
+    throw error;
+  }
+
+  // The change is saved. If it left a credit, send it back to the card.
+  const notice = await settleCredit(policyId, result.transaction.id);
+  revalidatePolicy(policyId);
+  return { ok: true, preview: result.preview, notice };
+}
+
+/** Lets the broker re-send a refund that failed. */
+export async function retryRefundAction(policyId: string): Promise<{ notice?: string }> {
+  await requireUser("BROKER");
+  const notice = await settleCredit(policyId);
+  revalidatePolicy(policyId);
+  return { notice };
+}
+
+async function settleCredit(policyId: string, transactionId?: string): Promise<string | undefined> {
+  try {
+    const { refundedCents, message } = await refundCredit(policyId, transactionId);
+    if (message) return message;
+    if (refundedCents > 0) return `${formatUSD(refundedCents)} was refunded to the customer's card.`;
+  } catch (error) {
+    if (error instanceof StripeNotConfiguredError) {
+      return "The customer has a credit, but Stripe isn't set up here, so it wasn't refunded.";
+    }
+    console.error(error);
+    return "The change was saved, but the refund couldn't be sent. Use Retry refund on the policy page.";
+  }
+}
+
+function revalidatePolicy(policyId: string) {
+  revalidatePath(`/broker/policies/${policyId}`);
+  revalidatePath(`/portal/policies/${policyId}`);
 }

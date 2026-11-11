@@ -18,6 +18,7 @@ export function useChangeFlow(policyId: string) {
   const [preview, setPreview] = useState<ChangePreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const reset = () => {
     setRequest(null);
@@ -28,6 +29,7 @@ export function useChangeFlow(policyId: string) {
   const runPreview = (next: ChangeRequest) =>
     startTransition(async () => {
       setDone(false);
+      setNotice(null);
       const result = await previewChangeAction(policyId, next);
       if (result.ok) {
         setRequest(next);
@@ -46,6 +48,7 @@ export function useChangeFlow(policyId: string) {
       if (result.ok) {
         reset();
         setDone(true);
+        setNotice(result.notice ?? null);
         onSaved?.();
         router.refresh();
       } else {
@@ -54,7 +57,7 @@ export function useChangeFlow(policyId: string) {
       }
     });
 
-  return { pending, preview, error, done, runPreview, confirm, reset };
+  return { pending, preview, error, done, notice, runPreview, confirm, reset };
 }
 
 export function PreviewPanel({
@@ -138,6 +141,15 @@ export function FormError({ error }: { error: string | null }) {
   return (
     <p role="alert" className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">
       {error}
+    </p>
+  );
+}
+
+export function SavedNotice({ done, notice, label }: { done: boolean; notice: string | null; label: string }) {
+  if (!done) return null;
+  return (
+    <p className="mt-3 rounded-md bg-green-50 px-3 py-2 text-sm text-green-800" data-testid="saved-notice">
+      {label} {notice}
     </p>
   );
 }

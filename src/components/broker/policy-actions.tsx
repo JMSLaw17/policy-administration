@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { FormError, PreviewPanel, useChangeFlow } from "./change-flow";
+import { FormError, PreviewPanel, SavedNotice, useChangeFlow } from "./change-flow";
 import { Card, inputClass, primaryButton, secondaryButton } from "@/components/ui";
 import {
   COVERAGES,
@@ -117,7 +117,7 @@ export function EditCoverageCard({
           </button>
         )}
         <FormError error={flow.error} />
-        {flow.done && <p className="mt-3 text-sm text-green-700">Coverage change saved.</p>}
+        <SavedNotice done={flow.done} notice={flow.notice} label="Coverage change saved." />
         {flow.preview && (
           <PreviewPanel
             preview={flow.preview}

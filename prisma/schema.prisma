@@ -151,6 +151,9 @@ model LedgerEntry {
 }
 
 enum PaymentStatus {
+  /// Payment form opened, nothing submitted to Stripe yet.
+  INITIATED
+  /// Submitted; Stripe hasn't given a final answer.
   PENDING
   SUCCEEDED
   FAILED
@@ -161,7 +164,7 @@ model Payment {
   policyId              String
   policy                Policy        @relation(fields: [policyId], references: [id])
   amountCents           Int
-  status                PaymentStatus @default(PENDING)
+  status                PaymentStatus @default(INITIATED)
   stripePaymentIntentId String?       @unique
   failureReason         String?
   createdAt             DateTime      @default(now())
