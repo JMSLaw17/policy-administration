@@ -36,8 +36,39 @@ model Customer {
   postalCode   String
   createdAt    DateTime @default(now())
 
-  users    User[]
-  policies Policy[]
+  users        User[]
+  policies     Policy[]
+  applications Application[]
+}
+
+enum ApplicationStatus {
+  AWAITING_SIGNATURE
+  SIGNED
+  ISSUED
+  /// Declined by the customer, or withdrawn by the broker.
+  VOIDED
+}
+
+/// A request for coverage that the policyholder must e-sign (DocuSign) before
+/// the broker can issue the policy.
+model Application {
+  id                 String            @id @default(cuid())
+  customerId         String
+  customer           Customer          @relation(fields: [customerId], references: [id])
+  startDate          DateTime          @db.Date
+  coverageCodes      String[]
+  premiumCents       Int
+  status             ApplicationStatus @default(AWAITING_SIGNATURE)
+  docusignEnvelopeId String?           @unique
+  signerName         String
+  signerEmail        String
+  /// The policyholder login that signs. Also the DocuSign clientUserId.
+  signerUserId       String
+  signedAt           DateTime?
+  policyId           String?           @unique
+  policy             Policy?           @relation(fields: [policyId], references: [id])
+  createdById        String
+  createdAt          DateTime          @default(now())
 }
 
 enum PolicyStatus {
@@ -64,6 +95,7 @@ model Policy {
   payments     Payment[]
   refunds      Refund[]
   events       IntegrationEvent[]
+  application  Application?
 }
 
 enum TransactionType {

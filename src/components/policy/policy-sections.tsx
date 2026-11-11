@@ -40,6 +40,20 @@ export function PolicySummary({ view, actions }: { view: View; actions?: React.R
           Term: {formatDate(view.startDate)} to {formatDate(view.endDate)} ({view.termDays} days)
           {view.cancelledEffective && <> · Cancelled effective {formatDate(view.cancelledEffective)}</>}
         </p>
+        {view.application && (
+          <p className="mt-1 text-sm text-slate-500">
+            Application signed by {view.application.signerName} on {dateTime(view.application.signedAt)} through
+            DocuSign ·{" "}
+            <a
+              className="text-indigo-600 underline"
+              href={`/api/applications/${view.application.id}/document`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              View signed application
+            </a>
+          </p>
+        )}
       </div>
       <div className="flex items-center gap-4">
         <div className="text-right">

@@ -6,7 +6,7 @@ A demo platform for managing commercial insurance policies, built for a 48-hour 
 - **Plan:** [PLAN.md](PLAN.md)
 - **Decision log:** [DECISIONS.md](DECISIONS.md)
 
-> This README grows as the build progresses. Status as of 2026-11-11: a broker can create customers, issue a policy, edit coverage, correct any past action, and cancel, and both roles see the statement and history. Payments, refunds, and e-signing are not built yet.
+> This README grows as the build progresses. Status as of 2026-11-11: the policy workflow, Stripe payments and refunds, and customer details editing are built and tested. DocuSign signing is built but not yet tested against the sandbox.
 
 ## Demo logins
 
@@ -21,8 +21,8 @@ All data is fictional. Both accounts use the password `demo-password`.
 
 | Integration | Status |
 |---|---|
-| Stripe (test mode): payments, webhooks, refunds | Planned, not built yet |
-| DocuSign (developer sandbox): e-signing the application | Planned, not built yet |
+| Stripe (test mode): payments, webhooks, refunds | Live in test mode, tested locally and on the deployed app |
+| DocuSign (developer sandbox): e-signing the application | Built, not yet tested against the sandbox |
 | Carrier, rating, underwriting | Simulated (flat rate table in this repo) |
 
 ## Run it locally

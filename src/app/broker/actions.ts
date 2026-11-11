@@ -9,6 +9,8 @@ import { db } from "@/lib/db";
 import { DEMO_PASSWORD } from "@/lib/demo";
 import { COVERAGES, formatUSD, isISODate, PolicyRuleError } from "@/lib/engine";
 import { StripeNotConfiguredError } from "@/lib/integrations/stripe";
+import { DocuSignError, isDocuSignConfigured } from "@/lib/integrations/docusign";
+import { issueFromApplication, sendApplication, withdrawApplication } from "@/lib/policies/applications";
 import { updateCustomerDetails } from "@/lib/policies/details";
 import { refundCredit } from "@/lib/policies/payments";
 import {
@@ -19,7 +21,7 @@ import {
   type ChangeRequest,
 } from "@/lib/policies/service";
 
-export type FormState = { error?: string } | undefined;
+export type FormState = { error?: string; saved?: string } | undefined;
 
 const isoDate = z.string().refine(isISODate, "Enter a valid date.");
 const coverageCode = z.enum(COVERAGES.map((c) => c.code) as [string, ...string[]]);
@@ -89,6 +91,11 @@ const IssueSchema = z.object({
   coverages: z.array(coverageCode).min(1),
 });
 
+/**
+ * With DocuSign set up, this sends an application for the policyholder to
+ * sign, and the policy is issued afterwards from the signed application.
+ * Without DocuSign (local development with no keys) it issues straight away.
+ */
 export async function issuePolicyAction(_prev: FormState, formData: FormData): Promise<FormState> {
   const user = await requireUser("BROKER");
   const parsed = IssueSchema.safeParse({
@@ -97,21 +104,49 @@ export async function issuePolicyAction(_prev: FormState, formData: FormData): P
     coverages: formData.getAll("coverages"),
   });
   if (!parsed.success) return { error: parsed.error.issues[0].message };
+  const input = {
+    customerId: parsed.data.customerId,
+    startDate: parsed.data.startDate,
+    coverageCodes: parsed.data.coverages,
+    userId: user.id,
+  };
 
   let policyId: string;
   try {
-    const policy = await issuePolicy({
-      customerId: parsed.data.customerId,
-      startDate: parsed.data.startDate,
-      coverageCodes: parsed.data.coverages,
-      userId: user.id,
-    });
-    policyId = policy.id;
+    if (isDocuSignConfigured()) {
+      await sendApplication(input);
+      revalidatePath(`/broker/customers/${input.customerId}`);
+      return { saved: "Application sent. The policyholder can now sign it from their account." };
+    }
+    policyId = (await issuePolicy(input)).id;
   } catch (error) {
-    if (error instanceof PolicyRuleError) return { error: error.message };
+    if (error instanceof PolicyRuleError || error instanceof DocuSignError) return { error: error.message };
     throw error;
   }
   redirect(`/broker/policies/${policyId}`);
+}
+
+export async function issueFromApplicationAction(applicationId: string): Promise<FormState> {
+  const user = await requireUser("BROKER");
+  let policyId: string;
+  try {
+    policyId = (await issueFromApplication(applicationId, user.id)).id;
+  } catch (error) {
+    if (error instanceof PolicyRuleError || error instanceof DocuSignError) return { error: error.message };
+    throw error;
+  }
+  redirect(`/broker/policies/${policyId}`);
+}
+
+export async function withdrawApplicationAction(applicationId: string, customerId: string): Promise<FormState> {
+  await requireUser("BROKER");
+  try {
+    await withdrawApplication(applicationId);
+  } catch (error) {
+    if (error instanceof PolicyRuleError || error instanceof DocuSignError) return { error: error.message };
+    throw error;
+  }
+  revalidatePath(`/broker/customers/${customerId}`);
 }
 
 /* ------------------- Edit coverage, correct, cancel ------------------- */

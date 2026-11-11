@@ -1,9 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
+import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { StripeNotConfiguredError } from "@/lib/integrations/stripe";
+import { PolicyRuleError } from "@/lib/engine";
+import { DocuSignError } from "@/lib/integrations/docusign";
+import { signingUrlFor } from "@/lib/policies/applications";
 import { PaymentError, reconcilePending, startPayment } from "@/lib/policies/payments";
 
 export type StartPaymentResult =
@@ -35,4 +40,21 @@ export async function refreshPaymentsAction(policyId: string) {
   await requireOwnPolicy(policyId);
   await reconcilePending(policyId);
   revalidatePath(`/portal/policies/${policyId}`);
+}
+
+/** Opens DocuSign's signing screen for one of the policyholder's applications. */
+export async function startSigningAction(applicationId: string): Promise<{ error: string } | undefined> {
+  const user = await requireUser("POLICYHOLDER");
+  const h = await headers();
+  const host = h.get("x-forwarded-host") ?? h.get("host");
+  const protocol = h.get("x-forwarded-proto") ?? "http";
+  let url: string;
+  try {
+    url = await signingUrlFor(applicationId, user.id, `${protocol}://${host}`);
+  } catch (error) {
+    if (error instanceof PolicyRuleError || error instanceof DocuSignError) return { error: error.message };
+    console.error(error);
+    return { error: "We couldn't open the signing screen. Please try again." };
+  }
+  redirect(url);
 }

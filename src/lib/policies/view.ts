@@ -71,6 +71,7 @@ export async function loadPolicyView(policyId: string) {
       ledger: { orderBy: { seq: "asc" } },
       payments: { orderBy: { createdAt: "asc" } },
       refunds: { orderBy: { createdAt: "asc" } },
+      application: true,
     },
   });
   if (!policy) return null;
@@ -170,6 +171,14 @@ export async function loadPolicyView(policyId: string) {
       email: policy.customer.email,
       address: `${policy.customer.addressLine1}, ${policy.customer.city}, ${policy.customer.state} ${policy.customer.postalCode}`,
     },
+    application: policy.application?.signedAt
+      ? {
+          id: policy.application.id,
+          signerName: policy.application.signerName,
+          signedAt: policy.application.signedAt.toISOString(),
+          envelopeId: policy.application.docusignEnvelopeId,
+        }
+      : null,
     coverage: state.intervals,
     statement,
     history,

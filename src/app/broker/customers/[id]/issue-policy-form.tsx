@@ -5,7 +5,16 @@ import { issuePolicyAction, type FormState } from "@/app/broker/actions";
 import { inputClass, primaryButton } from "@/components/ui";
 import { addOneYear, COVERAGES, formatDate, formatUSD, isISODate } from "@/lib/engine";
 
-export function IssuePolicyForm({ customerId, today }: { customerId: string; today: string }) {
+export function IssuePolicyForm({
+  customerId,
+  today,
+  requiresSignature,
+}: {
+  customerId: string;
+  today: string;
+  /** With DocuSign set up, the policyholder signs an application first. */
+  requiresSignature: boolean;
+}) {
   const [state, action, pending] = useActionState<FormState, FormData>(issuePolicyAction, undefined);
   const [startDate, setStartDate] = useState(today);
   const [selected, setSelected] = useState(COVERAGES.filter((c) => c.required).map((c) => c.code));
@@ -76,8 +85,15 @@ export function IssuePolicyForm({ customerId, today }: { customerId: string; tod
           {state.error}
         </p>
       )}
+      {state?.saved && <p className="mt-3 text-sm text-green-700">{state.saved}</p>}
       <button type="submit" disabled={pending} className={`${primaryButton} mt-4`}>
-        {pending ? "Issuing…" : "Issue policy"}
+        {requiresSignature
+          ? pending
+            ? "Sending…"
+            : "Send application for signature"
+          : pending
+            ? "Issuing…"
+            : "Issue policy"}
       </button>
     </form>
   );
