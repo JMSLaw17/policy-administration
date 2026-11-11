@@ -311,7 +311,7 @@ export function HistoryCard({
               </div>
               {entry.statementLines.length > 0 && (
                 <div className="text-right">
-                  <p className="text-xs text-slate-500">Change in amount due</p>
+                  <p className="text-xs text-slate-500">Change in premium owed</p>
                   <p className="font-medium tabular-nums text-slate-900">{signedUSD(entry.netCents)}</p>
                 </div>
               )}

@@ -140,7 +140,8 @@ export async function loadPolicyView(policyId: string) {
       createdAt: t.createdAt.toISOString(),
       createdBy: t.createdBy.name,
       reason: t.reason,
-      netCents: rows.reduce((sum, r) => sum + r.amountCents, 0),
+      // Premium only. A refund this action triggered is money moving, not a change in what's owed.
+      netCents: rows.filter((r) => r.kind !== "REFUND").reduce((sum, r) => sum + r.amountCents, 0),
       statementLines: rows.map((r) => r.line),
       correctsSeq: corrected?.seq ?? null,
       supersededBySeq: superseding?.seq ?? null,
