@@ -54,7 +54,7 @@ These rules are written down once and used everywhere: in the code, the statemen
 
 The customer sees all three Cyber lines, with the original marked "superseded by correction," and a plain-English note: *"Your Cyber coverage start date was corrected from Nov 1 to Oct 25. That adds 7 days of coverage at $2.00/day, so you owe $14.00."*
 
-If the reviewers move the date **later** instead (say Nov 8), the new charge is smaller, the balance goes negative, and the statement shows a credit. The broker can then refund that credit through Stripe with one click. The debrief answer is always the same formula: reverse the old line, post the new line, and the difference is what changes.
+If the reviewers move the date **later** instead (say Nov 8), the new charge is smaller and the customer has a credit. As a real billing system would, the app first uses that credit to pay down anything else the customer owes. Whatever is left is refunded to their card through Stripe automatically, and the statement shows the refund line. The debrief answer is always the same formula: reverse the old line, post the new line, and the difference is what changes.
 
 **Cancellation example:** if this policy is cancelled effective Apr 1, 2027, there are 183 unused days. The refund is $1,095 × 183/365 = $549.00 for General Liability plus $730 × 183/365 = $366.00 for Cyber, so $915.00 back to the card (assuming everything was paid).
 
@@ -64,7 +64,7 @@ If the reviewers move the date **later** instead (say Nov 8), the new charge is 
 |---|---|---|
 | Create customers | Yes | No |
 | Issue, add coverage, correct, cancel | Yes | No |
-| Issue a refund of a credit | Yes | No |
+| Retry a failed refund | Yes | No |
 | See coverage and policy history | All customers | Own policies only |
 | Pay amount due | No (can send a payment link) | Yes |
 | See the statement and calculation details | Yes | Yes |
@@ -103,7 +103,7 @@ Every request we send and every webhook we receive is saved in an **integration 
 |---|---|---|
 | App | **Next.js (App Router) + TypeScript** | Frontend and backend in one TypeScript codebase, and easy to deploy |
 | Database | **Postgres** with **Prisma** | Real transactions and constraints for financial data, and typed queries |
-| Hosting | **Vercel** for the app, **Neon** for Postgres (both free) | Fast deploy, and a public URL for Stripe webhooks |
+| Hosting | **Vercel** for the app, **Neon** for Postgres (free tiers, no card needed) | Fast deploy, and a public URL for Stripe webhooks |
 | UI | Tailwind + shadcn/ui | Clean screens quickly |
 | Validation | Zod | One schema for forms and the API |
 | Tests | Vitest for the money engine, one Playwright run-through of the scenario | The math is where bugs would hurt most |
@@ -157,4 +157,4 @@ Each has a default I'll go with unless you say otherwise.
 
 1. **Second integration:** Resend for email (default), or something more insurance-flavored like DocuSign's sandbox for e-signing the policy? DocuSign is more impressive but takes longer to set up.
 2. **Hosting:** Vercel + Neon (default). You'll need to create free accounts for these, plus Stripe and Resend, and give me test keys in a local `.env` file.
-3. **Refunding a credit after a correction:** the broker clicks to refund it (default), or it refunds automatically like a cancellation does?
+3. ~~Refunding a credit after a correction~~: decided. The credit pays down any open balance first, and anything left is refunded automatically (see the decision log).
