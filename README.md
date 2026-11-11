@@ -6,7 +6,7 @@ A demo platform for managing commercial insurance policies, built for a 48-hour 
 - **Plan:** [PLAN.md](PLAN.md)
 - **Decision log:** [DECISIONS.md](DECISIONS.md)
 
-> This README grows as the build progresses. Status as of 2026-11-11: project setup and demo logins work. The policy workflow and integrations are not built yet.
+> This README grows as the build progresses. Status as of 2026-11-11: a broker can create customers, issue a policy, edit coverage, correct any past action, and cancel, and both roles see the statement and history. Payments, refunds, and e-signing are not built yet.
 
 ## Demo logins
 

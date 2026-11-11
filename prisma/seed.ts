@@ -11,7 +11,7 @@ const db = new PrismaClient({
 });
 
 // Demo logins for reviewers. Also listed in the README.
-export const DEMO_PASSWORD = "demo-password";
+import { DEMO_PASSWORD } from "../src/lib/demo";
 const BROKER_EMAIL = "broker@demo.test";
 const POLICYHOLDER_EMAIL = "owner@acme-bakery.test";
 

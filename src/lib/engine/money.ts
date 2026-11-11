@@ -27,3 +27,8 @@ export function formatUSD(cents: number): string {
   const rest = String(abs % 100).padStart(2, "0");
   return `${sign}$${dollars}.${rest}`;
 }
+
+/** For changes in what's owed: "+$14.00", "-$14.00", "$0.00". */
+export function signedUSD(cents: number): string {
+  return cents > 0 ? `+${formatUSD(cents)}` : formatUSD(cents);
+}
