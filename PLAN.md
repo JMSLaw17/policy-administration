@@ -58,12 +58,24 @@ If the reviewers move the date **later** instead (say Nov 8), the new charge is 
 
 **Cancellation example:** if this policy is cancelled effective Apr 1, 2027, there are 183 unused days. The refund is $1,095 × 183/365 = $549.00 for General Liability plus $730 × 183/365 = $366.00 for Cyber, so $915.00 back to the card (assuming everything was paid).
 
+### How a broker edits a policy
+
+Every edit is a new dated change (an "endorsement"). Nothing is ever overwritten.
+
+| Edit | How it works | Money effect |
+|---|---|---|
+| Add coverage | New coverage from an effective date to the end of the term | Pro-rata charge for the days covered |
+| Remove coverage | Coverage ends on an effective date | Pro-rata credit for the unused days (same math as cancellation, for one coverage), applied to any balance and refunded otherwise |
+| Correct a past change | Pick any earlier change, including the original issue, and fix its date or coverage | Reverse that change's lines and post the corrected ones. Both stay visible |
+| Edit details | Business name, contact, address | None. Recorded in the policy history with who changed it and when |
+
 ## 5. Who can do what
 
 | | Broker | Policyholder |
 |---|---|---|
 | Create customers | Yes | No |
-| Issue, add coverage, correct, cancel | Yes | No |
+| Issue, add or remove coverage, correct, cancel | Yes | No |
+| Edit business and contact details | Yes | No |
 | Retry a failed refund | Yes | No |
 | See coverage and policy history | All customers | Own policies only |
 | Pay amount due | No (can send a payment link) | Yes |
@@ -76,7 +88,7 @@ Login is a simple email and password with **seeded demo accounts** for each role
 **Broker**
 - Customers list, and a new customer form
 - Policy page with tabs: Coverage, History (every transaction), Statement (ledger), Payments
-- Action buttons: Add coverage, Correct a transaction, Cancel policy, Refund credit. Each one shows a **preview of the money impact before confirming**.
+- Action buttons: Add coverage, Remove coverage, Correct a past change, Cancel policy, Edit details. Each money-affecting action shows a **preview of the money impact before confirming**.
 - Integration log: every Stripe and DocuSign event, sent and received
 
 **Policyholder**
@@ -90,7 +102,7 @@ Login is a simple email and password with **seeded demo accounts** for each role
 |---|---|---|---|
 | **Stripe** | Test mode | Collects premium (Payment Element with test cards), webhooks drive pending, succeeded, and failed, and the Refunds API returns cancellation refunds and credits | **Live** (test mode) |
 | **DocuSign** | Developer sandbox (free, no card) | The policyholder signs the application inside our app (embedded signing) before the broker binds the policy. A Connect webhook marks it signed, and the signed PDF is linked from the policy history | **Live** (sandbox) |
-| Email notifications | n/a | Not built. Resend's free tier could be added in about an hour if time allows | **Not built** |
+| Email notifications | n/a | Not built. Resend's free tier could be added later | **Not built** |
 | Insurance carrier, rating, underwriting | n/a | Premiums come from our own flat rate table, and policies are bound instantly | **Simulated** |
 | Policy documents | n/a | An HTML summary page instead of a real declarations PDF | **Simulated** |
 
@@ -115,7 +127,7 @@ Every request we send and every webhook we receive is saved in an **integration 
 - **User**: email, password hash, role (broker or policyholder), linked customer
 - **Customer**: business name, contact name, email, address (all fictional)
 - **Policy**: policy number, customer, start date, end date, status (active, cancelled)
-- **PolicyTransaction**: the history. Type (issue, add coverage, correction, cancellation), effective date, who did it, when, reason, and for corrections, which transaction it corrects
+- **PolicyTransaction**: the history. Type (issue, add coverage, remove coverage, correction, cancellation, details change), effective date, who did it, when, reason, and for corrections, which transaction it corrects
 - **CoveragePeriod**: which coverage was active between which dates, created by which transaction
 - **LedgerEntry**: the statement. Amount in cents, kind (charge, reversal, payment, refund), the transaction or payment it came from, and the calculation inputs (rate, days, term days) so the "how calculated" panel can show the formula
 - **Payment**: Stripe PaymentIntent id, amount, status
@@ -124,23 +136,22 @@ Every request we send and every webhook we receive is saved in an **integration 
 
 The ledger only ever gets new rows. Nothing in it is updated or deleted.
 
-## 10. Build order (about 48 hours)
+## 10. Build order
 
-| # | Milestone | Done when | Rough time |
-|---|---|---|---|
-| 0 | Setup | Repo, Next.js, Prisma, Neon, login with seeded users, deployed to Vercel | 3h |
-| 1 | Money engine | Pure TypeScript pro-rata, reversal, and cancellation functions, with the worked example above as unit tests | 4h |
-| 2 | Issue a policy | Broker creates a customer and policy, and the statement shows the charge | 4h |
-| 3 | Payments | Stripe payment, webhooks, pending, succeeded, and failed shown to both roles | 6h |
-| 4 | Add coverage | Mid-term endorsement with a money preview | 3h |
-| 5 | Correction | The reviewer scenario works end to end | 4h |
-| 6 | Cancel and refund | Pro-rata refund through Stripe, refund status shown | 4h |
-| 7 | History and statement polish | Every line traceable, with "how calculated" panels, for both roles | 4h |
-| 8 | DocuSign and integration log | Application signed in-app before binding, webhook received, evidence page | 3h |
-| 9 | Submission | README (track, integrations, demo logins), decision log, video, screenshots | 4h |
-| | Buffer | For whatever breaks | ~9h |
+| # | Milestone | Done when |
+|---|---|---|
+| 0 | Setup | Repo, Next.js, Prisma, Neon, login with seeded users, deployed to Vercel |
+| 1 | Money engine | Pure TypeScript pro-rata, reversal, removal, and cancellation functions, with the worked examples above as unit tests |
+| 2 | Issue a policy | Broker creates a customer and policy, and the statement shows the charge |
+| 3 | Payments | Stripe payment, webhooks, pending, succeeded, and failed shown to both roles |
+| 4 | Add and remove coverage | Mid-term endorsements with a money preview |
+| 5 | Correction | The reviewer scenario works end to end, and any past change (including the original issue) can be corrected |
+| 6 | Cancel and refund | Pro-rata refund through Stripe, credits applied and auto-refunded, refund status shown |
+| 7 | Details edits and statement polish | Non-money detail edits with an audit trail, and every line traceable with "how calculated" panels for both roles |
+| 8 | DocuSign and integration log | Application signed in-app before binding, webhook received, evidence page |
+| 9 | Submission | README (track, integrations, demo logins), decision log, video, screenshots |
 
-Milestones 1 through 6 are the must-haves. If time runs short, DocuSign (8) falls back to checking status on return instead of the webhook, and the polish in 7 gets trimmed before anything in the core workflow does.
+Milestones 1 through 6 are the core workflow and come first.
 
 ## 11. What we're leaving out (and why)
 
@@ -149,7 +160,7 @@ Milestones 1 through 6 are the must-haves. If time runs short, DocuSign (8) fall
 - **Short-rate cancellation penalties and minimum earned premium**
 - **Rating factors** (industry, revenue, limits and deductibles)
 - **Claims, renewals, and broker commissions** (listed by the brief as extensions)
-- **Removing coverage mid-term.** The engine supports it (it's the same math as cancellation for one coverage), but the UI only adds coverage unless there's time left.
+- **Manual premium overrides and term extensions.** Each would add rules without exercising anything new in the money logic.
 - **Corrections after cancellation.** Blocked, with a clear message.
 
 ## 12. Questions for you
