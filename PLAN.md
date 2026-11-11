@@ -37,7 +37,7 @@ These rules are written down once and used everywhere: in the code, the statemen
 1. **Money is stored as whole cents** (integers), never floating point. All amounts are in USD.
 2. **Daily pro-rata.** A coverage's charge for part of the term is `annual premium × days covered ÷ days in term`. The start date counts, the end date doesn't (a policy from Oct 1 to the next Oct 1 is 365 days).
 3. **Rounding.** Each charge line is rounded to the nearest cent (half rounds up) and then lines are added up. We never round a total.
-4. **History is never edited.** Every action (issue, add coverage, correct, cancel) is a new *policy transaction* that writes new ledger lines. Fixing a mistake means reversing the old lines and posting new ones, so the original charge and the correction both stay visible.
+4. **History is never edited.** Every action (issue, edit coverage, correct, cancel) is a new *policy transaction* that writes new ledger lines. Fixing a mistake means reversing the old lines and posting new ones, so the original charge and the correction both stay visible.
 5. **Balance** is charges minus payments plus refunds. A positive balance is the **amount due**. A negative balance is a **credit** owed to the customer.
 6. **Cancellation rule: pro-rata refund of unearned premium.** The broker picks a cancellation date. The customer keeps paying only for days covered up to that date. Whatever they paid beyond that is refunded to their card through Stripe. If they still owed money, the refund shrinks or becomes a balance due. There's no short-rate penalty or minimum earned premium (documented simplification).
 7. **Payment status comes from Stripe**, not from the browser. A payment is *pending* until Stripe's webhook says *succeeded* or *failed*. Only succeeded payments reduce the balance.
@@ -48,7 +48,7 @@ These rules are written down once and used everywhere: in the code, the statemen
 |---|---|---|---|---|
 | Oct 1, 2026 | Issue policy, General Liability, term Oct 1, 2026 to Oct 1, 2027 | $1,095 × 365/365 | +$1,095.00 charge | $1,095.00 due |
 | Oct 1 | Customer pays (Stripe) | | −$1,095.00 payment | $0.00 |
-| Oct 20 | Broker adds Cyber, **recorded** effective Nov 1 | $730 × 334/365 | +$668.00 charge | $668.00 due |
+| Oct 20 | Broker edits coverage to add Cyber, **recorded** effective Nov 1 | $730 × 334/365 | +$668.00 charge | $668.00 due |
 | Oct 20 | Customer pays (Stripe) | | −$668.00 payment | $0.00 |
 | Nov 10 (three weeks later) | Broker corrects: Cyber actually began **Oct 25** | Reverse the old line, then $730 × 341/365 | −$668.00 reversal, +$682.00 charge | **$14.00 due** |
 
@@ -64,8 +64,7 @@ Every edit is a new dated change (an "endorsement"). Nothing is ever overwritten
 
 | Edit | How it works | Money effect |
 |---|---|---|
-| Add coverage | New coverage from an effective date to the end of the term | Pro-rata charge for the days covered |
-| Remove coverage | Coverage ends on an effective date | Pro-rata credit for the unused days (same math as cancellation, for one coverage), applied to any balance and refunded otherwise |
+| Edit coverage | One action. The broker picks an effective date and ticks or unticks coverages. General Liability is required and can't be unticked | Each coverage turned on gets a pro-rata charge for the days covered. Each coverage turned off gets a pro-rata credit for the unused days (same math as cancellation, for one coverage). The preview shows every line and the net amount, and a net credit is applied to any balance and refunded otherwise |
 | Correct a past change | Pick any earlier change, including the original issue, and fix its date or coverage | Reverse that change's lines and post the corrected ones. Both stay visible |
 | Edit details | Business name, contact, address | None. Recorded in the policy history with who changed it and when |
 
@@ -74,7 +73,7 @@ Every edit is a new dated change (an "endorsement"). Nothing is ever overwritten
 | | Broker | Policyholder |
 |---|---|---|
 | Create customers | Yes | No |
-| Issue, add or remove coverage, correct, cancel | Yes | No |
+| Issue, edit coverage, correct, cancel | Yes | No |
 | Edit business and contact details | Yes | No |
 | Retry a failed refund | Yes | No |
 | See coverage and policy history | All customers | Own policies only |
@@ -88,7 +87,7 @@ Login is a simple email and password with **seeded demo accounts** for each role
 **Broker**
 - Customers list, and a new customer form
 - Policy page with tabs: Coverage, History (every transaction), Statement (ledger), Payments
-- Action buttons: Add coverage, Remove coverage, Correct a past change, Cancel policy, Edit details. Each money-affecting action shows a **preview of the money impact before confirming**.
+- Action buttons: Edit coverage, Correct a past change, Cancel policy, Edit details. Each money-affecting action shows a **preview of the money impact before confirming**.
 - Integration log: every Stripe and DocuSign event, sent and received
 
 **Policyholder**
@@ -127,7 +126,7 @@ Every request we send and every webhook we receive is saved in an **integration 
 - **User**: email, password hash, role (broker or policyholder), linked customer
 - **Customer**: business name, contact name, email, address (all fictional)
 - **Policy**: policy number, customer, start date, end date, status (active, cancelled)
-- **PolicyTransaction**: the history. Type (issue, add coverage, remove coverage, correction, cancellation, details change), effective date, who did it, when, reason, and for corrections, which transaction it corrects
+- **PolicyTransaction**: the history. Type (issue, coverage change, correction, cancellation, details change), effective date, who did it, when, reason, and for corrections, which transaction it corrects
 - **CoveragePeriod**: which coverage was active between which dates, created by which transaction
 - **LedgerEntry**: the statement. Amount in cents, kind (charge, reversal, payment, refund), the transaction or payment it came from, and the calculation inputs (rate, days, term days) so the "how calculated" panel can show the formula
 - **Payment**: Stripe PaymentIntent id, amount, status
@@ -141,10 +140,10 @@ The ledger only ever gets new rows. Nothing in it is updated or deleted.
 | # | Milestone | Done when |
 |---|---|---|
 | 0 | Setup | Repo, Next.js, Prisma, Neon, login with seeded users, deployed to Vercel |
-| 1 | Money engine | Pure TypeScript pro-rata, reversal, removal, and cancellation functions, with the worked examples above as unit tests |
+| 1 | Money engine | Pure TypeScript pro-rata, coverage change, reversal, and cancellation functions, with the worked examples above as unit tests |
 | 2 | Issue a policy | Broker creates a customer and policy, and the statement shows the charge |
 | 3 | Payments | Stripe payment, webhooks, pending, succeeded, and failed shown to both roles |
-| 4 | Add and remove coverage | Mid-term endorsements with a money preview |
+| 4 | Edit coverage | One mid-term "Edit coverage" action that turns coverages on or off from an effective date, with a money preview |
 | 5 | Correction | The reviewer scenario works end to end, and any past change (including the original issue) can be corrected |
 | 6 | Cancel and refund | Pro-rata refund through Stripe, credits applied and auto-refunded, refund status shown |
 | 7 | Details edits and statement polish | Non-money detail edits with an audit trail, and every line traceable with "how calculated" panels for both roles |
