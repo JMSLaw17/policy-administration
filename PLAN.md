@@ -4,7 +4,7 @@
 
 ## 1. What we're building, in one paragraph
 
-A web app where a **broker** issues a small-business insurance policy, changes its coverage mid-term, corrects mistakes, and cancels it, and where a **policyholder** sees their coverage, pays what they owe, and reads a statement that explains every dollar. Payments and refunds run through **Stripe test mode**. Notifications go out through a **sandbox email service**. The heart of the app is a ledger: every amount on a statement links back to the policy action and payment record that produced it.
+A web app where a **broker** issues a small-business insurance policy, changes its coverage mid-term, corrects mistakes, and cancels it, and where a **policyholder** sees their coverage, pays what they owe, and reads a statement that explains every dollar. Payments and refunds run through **Stripe test mode**. Before a policy is bound, the policyholder e-signs the application through the **DocuSign developer sandbox**. The heart of the app is a ledger: every amount on a statement links back to the policy action and payment record that produced it.
 
 ## 2. What the reviewers score, and where we earn it
 
@@ -12,7 +12,7 @@ A web app where a **broker** issues a small-business insurance policy, changes i
 |---|---|---|
 | Understanding the financial problem | 30 | Append-only ledger, daily pro-rata math shown on every line, corrections that reverse and rebook instead of editing history |
 | Working app | 25 | Full core workflow for both roles, deployed, with seeded demo data |
-| Sandbox integrations | 20 | Stripe (payments, webhooks, refunds) plus email, with an in-app integration log as evidence |
+| Sandbox integrations | 20 | Stripe (payments, webhooks, refunds) plus DocuSign (e-signing the application), with an in-app integration log as evidence |
 | Live debrief | 15 | A "how was this calculated?" panel on every charge, so we can answer live when they change the date |
 | Engineering judgment | 10 | Small scope done well, unit tests on the money math, decision log, a clear "what we left out" list |
 
@@ -77,7 +77,7 @@ Login is a simple email and password with **seeded demo accounts** for each role
 - Customers list, and a new customer form
 - Policy page with tabs: Coverage, History (every transaction), Statement (ledger), Payments
 - Action buttons: Add coverage, Correct a transaction, Cancel policy, Refund credit. Each one shows a **preview of the money impact before confirming**.
-- Integration log: every Stripe and email event, sent and received
+- Integration log: every Stripe and DocuSign event, sent and received
 
 **Policyholder**
 - My policies: current coverage, dates, and status
@@ -89,7 +89,8 @@ Login is a simple email and password with **seeded demo accounts** for each role
 | Integration | Sandbox | What it does | Live or simulated |
 |---|---|---|---|
 | **Stripe** | Test mode | Collects premium (Payment Element with test cards), webhooks drive pending, succeeded, and failed, and the Refunds API returns cancellation refunds and credits | **Live** (test mode) |
-| **Resend** (email) | Free tier with test addresses | Sends policy issued, payment receipt, endorsement, correction, and cancellation emails | **Live** (sandbox) |
+| **DocuSign** | Developer sandbox (free, no card) | The policyholder signs the application inside our app (embedded signing) before the broker binds the policy. A Connect webhook marks it signed, and the signed PDF is linked from the policy history | **Live** (sandbox) |
+| Email notifications | n/a | Not built. Resend's free tier could be added in about an hour if time allows | **Not built** |
 | Insurance carrier, rating, underwriting | n/a | Premiums come from our own flat rate table, and policies are bound instantly | **Simulated** |
 | Policy documents | n/a | An HTML summary page instead of a real declarations PDF | **Simulated** |
 
@@ -135,11 +136,11 @@ The ledger only ever gets new rows. Nothing in it is updated or deleted.
 | 5 | Correction | The reviewer scenario works end to end | 4h |
 | 6 | Cancel and refund | Pro-rata refund through Stripe, refund status shown | 4h |
 | 7 | History and statement polish | Every line traceable, with "how calculated" panels, for both roles | 4h |
-| 8 | Email and integration log | Resend emails and an evidence page | 3h |
+| 8 | DocuSign and integration log | Application signed in-app before binding, webhook received, evidence page | 3h |
 | 9 | Submission | README (track, integrations, demo logins), decision log, video, screenshots | 4h |
 | | Buffer | For whatever breaks | ~9h |
 
-Milestones 1 through 6 are the must-haves. If time runs short, email (8) shrinks to two email types and the polish in 7 gets trimmed before anything in the core workflow does.
+Milestones 1 through 6 are the must-haves. If time runs short, DocuSign (8) falls back to checking status on return instead of the webhook, and the polish in 7 gets trimmed before anything in the core workflow does.
 
 ## 11. What we're leaving out (and why)
 
@@ -155,6 +156,6 @@ Milestones 1 through 6 are the must-haves. If time runs short, email (8) shrinks
 
 Each has a default I'll go with unless you say otherwise.
 
-1. **Second integration:** Resend for email (default), or something more insurance-flavored like DocuSign's sandbox for e-signing the policy? DocuSign is more impressive but takes longer to set up.
-2. **Hosting:** Vercel + Neon (default). You'll need to create free accounts for these, plus Stripe and Resend, and give me test keys in a local `.env` file.
+1. ~~Second integration~~: decided. DocuSign.
+2. **Hosting:** Vercel + Neon (default). You'll need to create free accounts for these, plus Stripe and DocuSign developer accounts, and give me test keys in a local `.env` file.
 3. ~~Refunding a credit after a correction~~: decided. The credit pays down any open balance first, and anything left is refunded automatically (see the decision log).
