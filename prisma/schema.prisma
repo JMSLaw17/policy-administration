@@ -1,0 +1,210 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  BROKER
+  POLICYHOLDER
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  role         Role
+  customerId   String?
+  customer     Customer? @relation(fields: [customerId], references: [id])
+  createdAt    DateTime  @default(now())
+
+  transactions PolicyTransaction[]
+}
+
+model Customer {
+  id           String   @id @default(cuid())
+  businessName String
+  contactName  String
+  email        String
+  addressLine1 String
+  city         String
+  state        String
+  postalCode   String
+  createdAt    DateTime @default(now())
+
+  users    User[]
+  policies Policy[]
+}
+
+enum PolicyStatus {
+  ACTIVE
+  CANCELLED
+}
+
+/// A projection of the policy's current state. The source of truth for how it
+/// got here is PolicyTransaction (history) and LedgerEntry (money).
+model Policy {
+  id                 String       @id @default(cuid())
+  policyNumber       String       @unique
+  customerId         String
+  customer           Customer     @relation(fields: [customerId], references: [id])
+  productCode        String
+  startDate          DateTime     @db.Date
+  endDate            DateTime     @db.Date
+  status             PolicyStatus @default(ACTIVE)
+  cancelledEffective DateTime?    @db.Date
+  createdAt          DateTime     @default(now())
+
+  transactions PolicyTransaction[]
+  ledger       LedgerEntry[]
+  payments     Payment[]
+  refunds      Refund[]
+  events       IntegrationEvent[]
+}
+
+enum TransactionType {
+  ISSUE
+  COVERAGE_CHANGE
+  CORRECTION
+  CANCELLATION
+  DETAILS_CHANGE
+}
+
+/// The policy history. Rows are only ever inserted. A correction is a new row
+/// that points at the row it corrects; the corrected row stays, marked
+/// superseded.
+model PolicyTransaction {
+  id            String          @id @default(cuid())
+  policyId      String
+  policy        Policy          @relation(fields: [policyId], references: [id])
+  seq           Int
+  type          TransactionType
+  effectiveDate DateTime        @db.Date
+  /// The change itself, e.g. { add: [...], remove: [...] } with the rates
+  /// that applied when it was made. See src/lib/engine/types.ts.
+  data          Json
+  reason        String?
+  createdAt     DateTime        @default(now())
+  createdById   String
+  createdBy     User            @relation(fields: [createdById], references: [id])
+
+  /// For CORRECTION rows: the transaction this one replaces.
+  correctsId   String?            @unique
+  corrects     PolicyTransaction? @relation("Correction", fields: [correctsId], references: [id])
+  supersededBy PolicyTransaction? @relation("Correction")
+
+  postedEntries LedgerEntry[] @relation("PostedBy")
+  originEntries LedgerEntry[] @relation("Origin")
+  refunds       Refund[]
+
+  @@unique([policyId, seq])
+}
+
+enum LedgerKind {
+  CHARGE
+  CREDIT
+  REVERSAL
+  PAYMENT
+  REFUND
+}
+
+/// The financial statement. Append-only: rows are never updated or deleted.
+/// amountCents is signed from the customer's point of view: positive raises
+/// the amount due, negative lowers it. Balance = sum(amountCents).
+model LedgerEntry {
+  id          String     @id @default(cuid())
+  policyId    String
+  policy      Policy     @relation(fields: [policyId], references: [id])
+  seq         Int        @default(autoincrement())
+  postedAt    DateTime   @default(now())
+  kind        LedgerKind
+  amountCents Int
+  description String
+
+  /// The policy action that wrote this row.
+  postedByTransactionId String?
+  postedBy              PolicyTransaction? @relation("PostedBy", fields: [postedByTransactionId], references: [id])
+  /// The policy action whose premium this row represents. Differs from
+  /// postedBy when a correction rebooks an earlier action's lines.
+  originTransactionId   String?
+  origin                PolicyTransaction? @relation("Origin", fields: [originTransactionId], references: [id])
+  /// For REVERSAL rows: the row being reversed.
+  reversesEntryId       String?            @unique
+  reverses              LedgerEntry?       @relation("Reversal", fields: [reversesEntryId], references: [id])
+  reversedBy            LedgerEntry?       @relation("Reversal")
+
+  paymentId String?  @unique
+  payment   Payment? @relation(fields: [paymentId], references: [id])
+  refundId  String?  @unique
+  refund    Refund?  @relation(fields: [refundId], references: [id])
+
+  /// Inputs to the pro-rata formula, so the UI can show the working:
+  /// { coverageCode, annualPremiumCents, days, termDays, from, to }
+  coverageCode String?
+  calc         Json?
+
+  @@index([policyId, seq])
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  policyId              String
+  policy                Policy        @relation(fields: [policyId], references: [id])
+  amountCents           Int
+  status                PaymentStatus @default(PENDING)
+  stripePaymentIntentId String?       @unique
+  failureReason         String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  ledgerEntry LedgerEntry?
+  refunds     Refund[]
+}
+
+model Refund {
+  id             String             @id @default(cuid())
+  policyId       String
+  policy         Policy             @relation(fields: [policyId], references: [id])
+  paymentId      String
+  payment        Payment            @relation(fields: [paymentId], references: [id])
+  transactionId  String?
+  transaction    PolicyTransaction? @relation(fields: [transactionId], references: [id])
+  amountCents    Int
+  status         PaymentStatus      @default(PENDING)
+  stripeRefundId String?            @unique
+  failureReason  String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  ledgerEntry LedgerEntry?
+}
+
+enum EventDirection {
+  OUTBOUND
+  INBOUND
+}
+
+/// Every call we make to a sandbox and every webhook we receive.
+model IntegrationEvent {
+  id         String         @id @default(cuid())
+  provider   String
+  direction  EventDirection
+  eventType  String
+  externalId String?
+  payload    Json
+  policyId   String?
+  policy     Policy?        @relation(fields: [policyId], references: [id])
+  createdAt  DateTime       @default(now())
+
+  @@index([provider, createdAt])
+}

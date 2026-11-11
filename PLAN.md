@@ -116,7 +116,7 @@ Every request we send and every webhook we receive is saved in an **integration 
 | App | **Next.js (App Router) + TypeScript** | Frontend and backend in one TypeScript codebase, and easy to deploy |
 | Database | **Postgres** with **Prisma** | Real transactions and constraints for financial data, and typed queries |
 | Hosting | **Vercel** for the app, **Neon** for Postgres (free tiers, no card needed) | Fast deploy, and a public URL for Stripe webhooks |
-| UI | Tailwind + shadcn/ui | Clean screens quickly |
+| UI | Tailwind CSS | Clean screens with few dependencies |
 | Validation | Zod | One schema for forms and the API |
 | Tests | Vitest for the money engine, one Playwright run-through of the scenario | The math is where bugs would hurt most |
 | Auth | Signed cookie sessions with seeded users | Good enough for a demo, and no third-party auth to set up |
