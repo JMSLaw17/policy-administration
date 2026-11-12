@@ -30,6 +30,34 @@ async function freshPaidPolicy(browser: Browser) {
 
 const refundRows = (page: Page) => page.locator("#payments").getByRole("row").filter({ hasText: "Refund of" });
 
+const dollars = (text: string) => Number(text.replace(/[$,+]/g, ""));
+
+/**
+ * Checks the broker's commission for one policy, on the Commissions page and
+ * on the policy's own commission table: 10% of its net premium, with the
+ * policy's lines adding up to the same figures.
+ */
+async function expectCommission(broker: Page, policyUrl: string, policyNumber: string) {
+  await broker.goto("/broker/commissions");
+  const cells = await broker.getByRole("row").filter({ hasText: policyNumber }).getByRole("cell").allInnerTexts();
+  // Columns: policy, customer, rate, net premium, commission.
+  expect(cells[2]).toBe("10%");
+  const netPremium = dollars(cells[3]);
+  const commission = dollars(cells[4]);
+  expect(commission).toBeCloseTo(netPremium * 0.1, 2);
+
+  await broker.goto(policyUrl);
+  const table = broker.locator("#commission");
+  await expect(table.getByTestId("commission-total")).toHaveText(cells[4]);
+  const lines = await table.locator("tbody tr").evaluateAll((rows) =>
+    rows.map((r) => [...r.querySelectorAll("td")].slice(2).map((td) => td.textContent ?? "")),
+  );
+  const sum = (column: number) => lines.reduce((total, line) => total + dollars(line[column]), 0);
+  expect(sum(0)).toBeCloseTo(netPremium, 2);
+  expect(sum(1)).toBeCloseTo(commission, 2);
+  return { netPremium, commission, lines: lines.map((l) => dollars(l[1])) };
+}
+
 test("cancelling a paid policy credits the unused days and refunds them to the cards", async ({ browser }) => {
   const { broker, holder, policyId, policyNumber } = await freshPaidPolicy(browser);
 
@@ -58,6 +86,12 @@ test("cancelling a paid policy credits the unused days and refunds them to the c
   // A cancelled policy can't be changed or renewed.
   await expect(broker.locator("#edit-coverage")).toHaveCount(0);
   await expect(broker.locator("#renew")).toHaveCount(0);
+
+  // Commission is clawed back on the premium that was credited: one negative line per credit.
+  const earned = await expectCommission(broker, broker.url().split("#")[0], policyNumber);
+  expect(earned.lines.filter((c) => c < 0)).toHaveLength(2);
+  expect(earned.commission).toBeGreaterThan(0); // the days that were covered still earn commission
+  console.log(`Commission on ${policyNumber} after cancelling: ${earned.commission.toFixed(2)} on ${earned.netPremium.toFixed(2)} of premium`);
 
   await holder.goto(`/portal/policies/${policyId}`);
   await expect(holder.getByText("Cancelled", { exact: true }).first()).toBeVisible();
@@ -101,8 +135,8 @@ test("renewing a policy creates a linked policy for the next term, due when it s
   await payByCard(holder, CARD_OK);
   await expect(balance(holder)).toHaveText("$0.00");
 
-  // The broker's commission page lists the renewal as its own policy.
-  await broker.goto("/broker/commissions");
-  await expect(broker.getByRole("row").filter({ hasText: renewalNumber })).toContainText(premium);
+  // The broker earns commission on the renewal as its own policy.
+  const renewalCommission = await expectCommission(broker, `/broker/policies/${renewalId}`, renewalNumber);
+  expect(renewalCommission.netPremium).toBe(dollars(premium));
   console.log(`Renewed ${policyNumber} as ${renewalNumber} for ${premium}, paid early`);
 });

@@ -109,6 +109,23 @@ test(`refunds and claims on ${POLICY}`, async ({ browser }) => {
   });
   console.log(`Refunded ${refundText} on ${POLICY}`);
 
+  await test.step("the correction claws back the commission on the reversed charge", async () => {
+    // The commission table follows the statement line by line. The reversal carries negative
+    // commission of exactly the size the original charge earned.
+    await broker.reload();
+    const lines = await broker.locator("#commission tbody tr").evaluateAll((rows) =>
+      rows.map((r) => [...r.querySelectorAll("td")].map((td) => td.textContent ?? "")),
+    );
+    const amount = (text: string) => Number(text.replace(/[$,+]/g, ""));
+    const reversal = lines.filter((l) => l[1].startsWith("Reversal:")).at(-1)!;
+    const original = lines.find((l) => `Reversal: ${l[1]}` === reversal[1])!;
+    expect(amount(reversal[3])).toBeLessThan(0);
+    expect(amount(reversal[3]) + amount(original[3])).toBe(0);
+    // And the total is still 10% of the net premium.
+    const totals = await broker.locator("#commission tfoot td").allInnerTexts();
+    expect(amount(totals.at(-1)!)).toBeCloseTo(amount(totals.at(-2)!) * 0.1, 2);
+  });
+
   const fileClaim = async (amount: string, description: string) => {
     await holder.reload();
     const claims = holder.locator("#claims");
