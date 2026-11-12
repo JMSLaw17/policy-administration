@@ -6,7 +6,7 @@ The idea the whole app is built around: **nothing on the statement is ever edite
 
 - **Track:** 1, policy administration
 - **Deployed app:** https://policy-administration.vercel.app
-- **Decision log:** [DECISIONS.md](DECISIONS.md), dated, with every assumption marked
+- **Decision log:** [DECISIONS.md](DECISIONS.md), each entry timestamped, with every assumption marked
 - **Integration evidence:** [docs/evidence](docs/evidence/README.md)
 - **Video script:** [docs/video-script.md](docs/video-script.md)
 

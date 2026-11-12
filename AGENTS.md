@@ -14,7 +14,7 @@ This file is the shared guide for every coding agent. `CLAUDE.md` is a symlink t
 
 Insurance policy administration demo (Corgi work trial, Track 1). Next.js 16 App Router, TypeScript, Prisma 7 on Postgres, Stripe test mode, DocuSign developer sandbox. Deployed at https://policy-administration.vercel.app on Vercel Hobby with Neon Postgres.
 
-- Plan: `PLAN.md`. Decisions and assumptions: `DECISIONS.md` (add a short dated entry for any important decision).
+- Plan: `PLAN.md`. Decisions and assumptions: `DECISIONS.md`. For any important decision, add one bullet at the bottom, with no headings: `- YYYY-MM-DD HH:MM · **The decision in a sentence.** Why, and what was left out.` The time is UTC, to the minute (`date -u +"%Y-%m-%d %H:%M"`).
 - No pull requests: commit and push straight to `main`. Pushing to `main` deploys to Vercel.
 - All data is fictional. Never use real money, real people or live keys.
 
