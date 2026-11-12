@@ -192,8 +192,10 @@ const kindLabel: Record<StatementRow["kind"], string> = {
 
 /** A payment or refund line, as opposed to a premium line. */
 const isMoney = (row: StatementRow) => row.kind === "PAYMENT" || row.kind === "REFUND";
-/** A line that cancels out an earlier payment (the bank took it back) or refund (it failed). */
-const undoesMoney = (row: StatementRow) => isMoney(row) && row.reversesLine !== null;
+/** A line that undoes an earlier payment (the bank took money back) or refund (it failed). */
+const undoesMoney = (row: StatementRow) => row.returnsLine !== null || (row.kind === "REFUND" && row.reversesLine !== null);
+/** A payment the bank has taken back in full. */
+const fullyReturned = (row: StatementRow) => row.returnedCents > 0 && row.returnedCents >= -row.amountCents;
 
 export function StatementCard({ view }: { view: View }) {
   return (
@@ -220,7 +222,7 @@ export function StatementCard({ view }: { view: View }) {
               <td className="px-5 py-3 whitespace-nowrap text-slate-600">{dateTime(row.postedAt)}</td>
               <td className="px-5 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className={row.reversedByLine ? "text-slate-500 line-through decoration-slate-400" : "text-slate-900"}>
+                  <span className={row.reversedByLine || fullyReturned(row) ? "text-slate-500 line-through decoration-slate-400" : "text-slate-900"}>
                     {row.description}
                   </span>
                   {undoesMoney(row) ? (
@@ -231,9 +233,12 @@ export function StatementCard({ view }: { view: View }) {
                       {kindLabel[row.kind]}
                     </Badge>
                   )}
+                  {row.returnedCents > 0 && (
+                    <Badge tone="red">{fullyReturned(row) ? "Returned by the bank" : "Partly returned by the bank"}</Badge>
+                  )}
                   {row.reversedByLine &&
                     (isMoney(row) ? (
-                      <Badge tone="red">{row.kind === "PAYMENT" ? "Returned by the bank" : "Did not go through"}</Badge>
+                      <Badge tone="red">Did not go through</Badge>
                     ) : (
                       <Badge tone="amber">Superseded by correction #{row.reversedBySeq}</Badge>
                     ))}
@@ -338,16 +343,25 @@ function RowExplanation({ row }: { row: StatementRow }) {
       )}
       {undoesMoney(row) && (
         <>
-          <dt className="text-slate-500">Cancels</dt>
+          <dt className="text-slate-500">{row.returnsLine ? "Takes back" : "Cancels"}</dt>
           <dd>
-            <a className="text-indigo-600 underline" href={`#line-${row.reversesLine}`}>
-              Line {row.reversesLine}
+            <a className="text-indigo-600 underline" href={`#line-${row.returnsLine ?? row.reversesLine}`}>
+              Line {row.returnsLine ?? row.reversesLine}
             </a>
             .{" "}
-            {row.kind === "PAYMENT"
-              ? "The payment was taken back by the bank after it had cleared, so the amount is due again."
+            {row.returnsLine
+              ? "The bank took this amount back from the payment after it had cleared, so it is due again."
               : "The refund was sent but did not arrive, so the amount is owed back again."}{" "}
             The original line stays on the statement so you can see what happened.
+          </dd>
+        </>
+      )}
+      {row.returnedCents > 0 && (
+        <>
+          <dt className="text-slate-500">Returned</dt>
+          <dd>
+            The bank later took back {fullyReturned(row) ? "all" : formatUSD(row.returnedCents)} of this payment. See the
+            &quot;Payment returned&quot; {fullyReturned(row) ? "line" : "lines"} further down.
           </dd>
         </>
       )}
@@ -359,11 +373,7 @@ function RowExplanation({ row }: { row: StatementRow }) {
             <a className="text-indigo-600 underline" href={`#line-${row.reversedByLine}`}>
               line {row.reversedByLine}
             </a>
-            {row.kind === "PAYMENT"
-              ? ", when the bank took the payment back."
-              : row.kind === "REFUND"
-                ? ", when the refund failed."
-                : " after a correction."}
+            {row.kind === "REFUND" ? ", when the refund failed." : " after a correction."}
           </dd>
         </>
       )}

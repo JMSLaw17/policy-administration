@@ -66,6 +66,7 @@ try {
   // Children first, so no row is left pointing at something that's gone.
   const steps = [
     ["statement lines", `delete from "LedgerEntry" where "policyId" = $1`],
+    ["payments returned by the bank", `delete from "PaymentReturn" where "policyId" = $1`],
     ["refunds", `delete from "Refund" where "policyId" = $1`],
     ["payments", `delete from "Payment" where "policyId" = $1`],
     ["claims", `delete from "Claim" where "policyId" = $1`],

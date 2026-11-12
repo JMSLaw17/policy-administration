@@ -333,3 +333,34 @@ test("a renewal is refused if the policy changed after the renewal was shown", a
   await expect(balance(broker)).toHaveText("$2,190.00");
 });
 
+test("a preview is thrown away if the date was changed while it was loading", async ({ browser }) => {
+  const { broker } = await demoPolicy(browser);
+  await broker.locator("#history-2").getByRole("button", { name: "Correct this" }).click();
+  const form = broker.getByTestId("correct-2");
+  const date = form.locator('input[name="correctedDate"]');
+  const recorded = await date.inputValue();
+  const earlier = (days: number) => new Date(Date.parse(`${recorded}T00:00:00Z`) - days * 86_400_000).toISOString().slice(0, 10);
+
+  // Hold the preview back, so there is time to change the date while it loads.
+  await broker.route("**/broker/policies/**", async (route) => {
+    if (route.request().method() === "POST") await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
+  await date.fill(earlier(7));
+  await form.getByRole("button", { name: "Preview correction" }).click();
+  await date.fill(earlier(14));
+
+  // The answer for a week earlier arrives, but the field now says two weeks. It isn't shown,
+  // so there is nothing to confirm that doesn't match the field.
+  await expect(form.getByRole("button", { name: "Preview correction" })).toBeEnabled();
+  await expect(form.getByTestId("preview")).toHaveCount(0);
+  await broker.unroute("**/broker/policies/**");
+
+  // Previewing again shows the figures for the date on screen, and that is what is saved.
+  await form.getByRole("button", { name: "Preview correction" }).click();
+  await expect(form.getByTestId("preview-after")).toHaveText("$28.00");
+  await form.getByRole("button", { name: "Confirm correction" }).click();
+  await expect(balance(broker)).toHaveText("$28.00");
+  await expect(broker.locator("#history-3")).toContainText("Cyber Liability now counts 14 more days");
+});
+

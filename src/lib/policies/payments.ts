@@ -1,6 +1,7 @@
 import "server-only";
 import Stripe from "stripe";
 import { db } from "@/lib/db";
+import type { Prisma } from "@/generated/prisma/client";
 import { allocateRefund, formatUSD, isBelowMinimumPayment, MIN_PAYMENT_CENTS } from "@/lib/engine";
 import { logIntegrationEvent } from "@/lib/integrations/log";
 import { stripe } from "@/lib/integrations/stripe";
@@ -196,16 +197,18 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
   if (intent.status === "succeeded") {
     await db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${payment.policyId} FOR UPDATE`;
-      const already = await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id }, include: { reversedBy: true } });
-      // A payment the bank later took back stays returned. Stripe still calls
+      // Read again under the lock: the copy above may be out of date.
+      const current = await tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
+      // A payment the bank took back in full stays returned. Stripe still calls
       // the PaymentIntent "succeeded", and hearing that again changes nothing.
-      if (already?.reversedBy) return;
+      if (current.failureReason === RETURNED_NOTE) return;
       // The status is set whether or not the statement line is already there,
       // so a payment that some older news marked pending is put right.
       await tx.payment.update({
         where: { id: payment.id },
         data: { status: "SUCCEEDED", amountCents: intent.amount_received, failureReason: null },
       });
+      const already = await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id } });
       if (already) return;
       await tx.ledgerEntry.create({
         data: {
@@ -216,6 +219,9 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
           paymentId: payment.id,
         },
       });
+      // If the bank's return was heard about before the payment itself, it has
+      // been waiting for this line. Put it on the statement now.
+      await postReturns(tx, payment.id);
     });
     // The amount due can drop while a payment is clearing (a bank debit takes
     // days). If this payment left the customer in credit, send the extra back
@@ -419,14 +425,16 @@ export async function refundCredit(
 
     const payments = await tx.payment.findMany({
       where: { policyId, status: "SUCCEEDED" },
-      include: { refunds: { where: { status: { not: "FAILED" } } } },
+      include: { refunds: { where: { status: { not: "FAILED" } } }, returns: true },
     });
     const { allocations, shortfallCents } = allocateRefund(
       credit,
       payments.map((p) => ({
         paymentId: p.id,
         amountCents: p.amountCents,
-        alreadyRefundedCents: p.refunds.reduce((s, r) => s + r.amountCents, 0),
+        // Money the bank has taken back is no longer there to refund, any more than money already refunded.
+        alreadyRefundedCents:
+          p.refunds.reduce((s, r) => s + r.amountCents, 0) + p.returns.reduce((s, r) => s + r.amountCents, 0),
         paidAt: p.createdAt,
       })),
     );
@@ -568,6 +576,12 @@ export async function recordRefund(refund: Stripe.Refund) {
   if (refund.status === "succeeded") {
     await db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${row.policyId} FOR UPDATE`;
+      // Read again under the lock. A refund Stripe has reported as failed never
+      // succeeds afterwards, so a "succeeded" that turns up late (an answer that
+      // was slow to arrive, or old news) must not undo the failure and wipe out
+      // the credit the customer is still owed.
+      const current = await tx.refund.findUniqueOrThrow({ where: { id: row.id } });
+      if (current.status === "FAILED") return;
       const already = await tx.ledgerEntry.findUnique({ where: { refundId: row.id } });
       if (already) return;
       await tx.refund.update({ where: { id: row.id }, data: { status: "SUCCEEDED", failureReason: null } });
@@ -635,9 +649,17 @@ function refundFailureText(refund: Stripe.Refund) {
  *
  * Once the dispute is lost the money is gone for good (a returned bank debit
  * is lost from the start and can't be contested). The payment's line stays on
- * the statement and a second line cancels it out, so the amount is due again.
- * As with a failed refund, the second line points at the first, which can be
- * reversed only once, so the amount due is restored exactly once.
+ * the statement and a new line puts the amount back, so it is due again.
+ *
+ * Each dispute is saved as its own record, keyed by Stripe's dispute id:
+ *
+ *  - Hearing about the same dispute twice finds the record and adds nothing.
+ *  - Two disputes on one payment (two partial chargebacks) are two records,
+ *    and both count.
+ *  - News can arrive out of order. If the return is heard about before the
+ *    payment itself is on the statement, the record is kept and its line is
+ *    posted when the payment is recorded (see recordPaymentIntent). Stripe is
+ *    also asked about the payment straight away, so that is usually at once.
  *
  * Not handled: a card dispute that is still open (the money has left the
  * account but may come back), and a refund already sent against the payment.
@@ -650,18 +672,66 @@ export async function recordDispute(dispute: Stripe.Dispute) {
 
   await db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${payment.policyId} FOR UPDATE`;
-    const posted = await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id }, include: { reversedBy: true } });
-    if (!posted || posted.reversedBy) return;
+    const known = await tx.paymentReturn.findUnique({ where: { stripeDisputeId: dispute.id } });
+    if (!known) {
+      await tx.paymentReturn.create({
+        data: {
+          policyId: payment.policyId,
+          paymentId: payment.id,
+          amountCents: dispute.amount,
+          reason: dispute.reason,
+          stripeDisputeId: dispute.id,
+        },
+      });
+    }
+    await postReturns(tx, payment.id);
+  });
+
+  // If the payment isn't on the statement yet, we heard about the return
+  // first. Ask Stripe about the payment now. Recording it posts the return too.
+  const posted = await db.ledgerEntry.findUnique({ where: { paymentId: payment.id } });
+  if (!posted) {
+    try {
+      await recordPaymentIntent(await stripe().paymentIntents.retrieve(intentId, { expand: ["payment_method"] }));
+    } catch (error) {
+      // The return is saved, and is posted whenever the payment is next recorded.
+      console.error("Could not check a disputed payment with Stripe", error);
+    }
+  }
+}
+
+/**
+ * Puts on the statement any of a payment's returns that aren't there yet.
+ * Does nothing until the payment itself is on the statement, because there is
+ * nothing to take back before then. Runs under the caller's lock on the policy.
+ */
+async function postReturns(tx: Prisma.TransactionClient, paymentId: string) {
+  const paid = await tx.ledgerEntry.findUnique({ where: { paymentId } });
+  if (!paid) return;
+  const returns = await tx.paymentReturn.findMany({
+    where: { paymentId },
+    include: { ledgerEntry: true },
+    orderBy: { createdAt: "asc" },
+  });
+  // The payment line is negative. What the bank takes back can never be more than was paid.
+  let left = -paid.amountCents - returns.reduce((sum, r) => sum + (r.ledgerEntry?.amountCents ?? 0), 0);
+  for (const r of returns) {
+    if (r.ledgerEntry) continue;
+    const amountCents = Math.min(r.amountCents, left);
+    if (amountCents <= 0) continue;
     await tx.ledgerEntry.create({
       data: {
-        policyId: payment.policyId,
+        policyId: r.policyId,
         kind: "PAYMENT",
-        // Never more than the payment itself, which is stored as a negative amount.
-        amountCents: Math.min(dispute.amount, -posted.amountCents),
-        description: `Payment returned by the bank (${dispute.reason.replaceAll("_", " ")})`,
-        reversesEntryId: posted.id,
+        amountCents,
+        description: `Payment returned by the bank (${r.reason.replaceAll("_", " ")})`,
+        paymentReturnId: r.id,
       },
     });
-    await tx.payment.update({ where: { id: payment.id }, data: { status: "FAILED", failureReason: RETURNED_NOTE } });
-  });
+    left -= amountCents;
+  }
+  // A payment taken back in full is no longer a payment. One taken back in part still is.
+  if (left <= 0) {
+    await tx.payment.update({ where: { id: paymentId }, data: { status: "FAILED", failureReason: RETURNED_NOTE } });
+  }
 }

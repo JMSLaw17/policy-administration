@@ -102,13 +102,14 @@ model Policy {
   renewedFrom        Policy?      @relation("Renewal", fields: [renewedFromId], references: [id])
   renewal            Policy?      @relation("Renewal")
 
-  transactions PolicyTransaction[]
-  ledger       LedgerEntry[]
-  payments     Payment[]
-  refunds      Refund[]
-  events       IntegrationEvent[]
-  application  Application?
-  claims       Claim[]
+  transactions   PolicyTransaction[]
+  ledger         LedgerEntry[]
+  payments       Payment[]
+  refunds        Refund[]
+  paymentReturns PaymentReturn[]
+  events         IntegrationEvent[]
+  application    Application?
+  claims         Claim[]
 }
 
 enum ClaimStatus {
@@ -218,10 +219,13 @@ model LedgerEntry {
   reverses              LedgerEntry?       @relation("Reversal", fields: [reversesEntryId], references: [id])
   reversedBy            LedgerEntry?       @relation("Reversal")
 
-  paymentId String?  @unique
-  payment   Payment? @relation(fields: [paymentId], references: [id])
-  refundId  String?  @unique
-  refund    Refund?  @relation(fields: [refundId], references: [id])
+  paymentId       String?        @unique
+  payment         Payment?       @relation(fields: [paymentId], references: [id])
+  refundId        String?        @unique
+  refund          Refund?        @relation(fields: [refundId], references: [id])
+  /// For a payment the bank took back: the return this line records.
+  paymentReturnId String?        @unique
+  paymentReturn   PaymentReturn? @relation(fields: [paymentReturnId], references: [id])
 
   /// Inputs to the pro-rata formula, so the UI can show the working:
   /// { coverageCode, annualPremiumCents, days, termDays, from, to }
@@ -253,6 +257,28 @@ model Payment {
 
   ledgerEntry LedgerEntry?
   refunds     Refund[]
+  returns     PaymentReturn[]
+}
+
+/// Money the customer's bank took back from a payment after it had cleared:
+/// a returned bank debit, or a card chargeback. Stripe reports each one as a
+/// dispute, and there is one row here per dispute, so hearing about the same
+/// dispute twice can't count it twice, while two disputes on one payment
+/// both count. The row is saved as soon as we hear of it and gets its
+/// statement line once the payment itself is on the statement.
+model PaymentReturn {
+  id              String   @id @default(cuid())
+  policyId        String
+  policy          Policy   @relation(fields: [policyId], references: [id])
+  paymentId       String
+  payment         Payment  @relation(fields: [paymentId], references: [id])
+  amountCents     Int
+  /// Stripe's reason, e.g. "insufficient_funds".
+  reason          String
+  stripeDisputeId String   @unique
+  createdAt       DateTime @default(now())
+
+  ledgerEntry LedgerEntry?
 }
 
 model Refund {

@@ -85,7 +85,8 @@ These rules live in `src/lib/engine` (pure functions, no database) and are used 
    - A refund is saved before Stripe is contacted and resumed with the same key until its outcome is known, so an interruption can neither strand a credit nor refund it twice.
    - A signed application issues exactly one policy, and a renewal is created only if it is still the one the broker was shown.
    - An amount shown on a Pay button is never raised, and a completed payment is never set back to pending by late news.
-   - A refund that fails after Stripe first reported it succeeded, or a payment the bank later takes back, is cancelled out by a second line on the statement, once, and the original line stays.
+   - A refund that fails after Stripe first reported it succeeded, or money the bank later takes back from a payment, is put right by a new line on the statement, once per event, and the original line stays. News that arrives out of order is handled: a return that comes before its payment waits for it, and a failed refund is never marked succeeded again.
+   - A preview is shown only if the form hasn't changed since it was asked for, so what is confirmed is what is on screen.
 10. **Less than $0.50 can't be collected.** Stripe's minimum charge is $0.50. A smaller amount due stays on the statement and is collected with the next payment.
    - The Pay button shows the amount Stripe holds, and asks the customer to agree if it has changed since they last saw it.
    - A broker's confirmation is refused, and the new figures shown, if a payment or another change landed after the preview.

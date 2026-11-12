@@ -500,6 +500,28 @@ describe("a refund that Stripe reports as succeeded and later as failed", () => 
     expect(await balance(policyId)).toBe(0);
   });
 
+  it("isn't undone by a \"succeeded\" that arrives after the failure", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    // The refund is accepted but not finished, so it isn't on the statement yet.
+    fake.refundStatus = "pending";
+    await refundCredit(policyId);
+    const linesBefore = (await loadPolicyView(policyId))!.statement.length;
+
+    // The failure is recorded first. Then a slow "succeeded" answer for the same refund turns up.
+    const known = fake.refunds[0] as unknown as Stripe.Refund;
+    await recordRefund({ ...known, status: "failed", failure_reason: "declined" } as Stripe.Refund);
+    await recordRefund({ ...known, status: "succeeded" } as Stripe.Refund);
+
+    // The refund stays failed, nothing is posted, and the customer is still owed the money.
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.refunds).toMatchObject([{ status: "FAILED" }]);
+    expect(view.statement).toHaveLength(linesBefore);
+    expect(view.balanceCents).toBe(-WEEK_OF_CYBER);
+  });
+
   it("just marks a refund failed if it never reached the statement", async () => {
     const { policyId, cyberChangeId } = await policyWithCyber();
     const { intent } = await openPayment(policyId, "processing", "PENDING");
@@ -518,8 +540,8 @@ describe("a refund that Stripe reports as succeeded and later as failed", () => 
 });
 
 describe("a payment the customer's bank takes back after it cleared", () => {
-  const dispute = (intentId: string, amount: number, status = "lost") =>
-    ({ id: "dp_1", payment_intent: intentId, amount, status, reason: "insufficient_funds" }) as unknown as Stripe.Dispute;
+  const dispute = (intentId: string, amount: number, status = "lost", id = "dp_1") =>
+    ({ id, payment_intent: intentId, amount, status, reason: "insufficient_funds" }) as unknown as Stripe.Dispute;
 
   it("keeps the payment line, cancels it out once, and makes the amount due again", async () => {
     const { policyId } = await policyWithCyber();
@@ -536,11 +558,11 @@ describe("a payment the customer's bank takes back after it cleared", () => {
     const view = (await loadPolicyView(policyId))!;
     expect(view.balanceCents).toBe(paid);
     expect(view.statement.slice(-2)).toMatchObject([
-      { kind: "PAYMENT", amountCents: -paid, reversedByLine: view.statement.length },
+      { kind: "PAYMENT", amountCents: -paid, returnedCents: paid },
       {
         kind: "PAYMENT",
         amountCents: paid,
-        reversesLine: view.statement.length - 1,
+        returnsLine: view.statement.length - 1,
         description: "Payment returned by the bank (insufficient funds)",
       },
     ]);
@@ -564,6 +586,84 @@ describe("a payment the customer's bank takes back after it cleared", () => {
     const again = await startPayment(policyId);
     expect(again.amountCents).toBe(paid);
     expect(again.clientSecret).not.toBe(`${intent.id}_secret`);
+  });
+
+  it("is kept and applied when the return is heard about before the payment itself", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
+    const paid = GL + CYBER_FROM_OCT_25;
+
+    // The bank's return arrives first. As far as the app knows, the payment is still clearing,
+    // and so does Stripe when asked (the stand-in still says "processing").
+    await recordDispute(dispute(intent.id, paid));
+    expect(await balance(policyId)).toBe(paid);
+    expect(await db.paymentReturn.count({ where: { paymentId } })).toBe(1);
+    expect((await loadPolicyView(policyId))!.statement.filter((r) => r.kind === "PAYMENT")).toHaveLength(0);
+
+    // Then the news that the payment succeeded. Both lines are posted, and the amount is still due.
+    await stripeConfirms(intent);
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.statement.slice(-2).map((r) => [r.kind, r.amountCents])).toEqual([
+      ["PAYMENT", -paid],
+      ["PAYMENT", paid],
+    ]);
+    expect(view.balanceCents).toBe(paid);
+    expect(view.payments).toMatchObject([{ status: "FAILED", failureReason: "Returned by the bank after it had cleared." }]);
+
+    // Nothing more happens however often either piece of news is repeated.
+    await recordDispute(dispute(intent.id, paid));
+    await stripeConfirms(intent);
+    expect((await loadPolicyView(policyId))!.statement).toHaveLength(view.statement.length);
+  });
+
+  it("asks Stripe about the payment when the return arrives first, and applies both at once", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    const paid = GL + CYBER_FROM_OCT_25;
+    // Stripe already has the payment as succeeded. Only our record is behind.
+    Object.assign(intent, { status: "succeeded", amount_received: intent.amount });
+
+    await recordDispute(dispute(intent.id, paid));
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.statement.slice(-2).map((r) => [r.kind, r.amountCents])).toEqual([
+      ["PAYMENT", -paid],
+      ["PAYMENT", paid],
+    ]);
+    expect(view.balanceCents).toBe(paid);
+  });
+
+  it("counts two separate partial returns on one payment, each once", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+
+    await recordDispute(dispute(intent.id, 10_000, "lost", "dp_first"));
+    await recordDispute(dispute(intent.id, 5_000, "lost", "dp_second"));
+    // Each is repeated, as a webhook retry would.
+    await recordDispute(dispute(intent.id, 10_000, "lost", "dp_first"));
+    await recordDispute(dispute(intent.id, 5_000, "lost", "dp_second"));
+
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.balanceCents).toBe(15_000);
+    expect(view.statement.slice(-2).map((r) => [r.kind, r.amountCents, r.returnsLine])).toEqual([
+      ["PAYMENT", 10_000, view.statement.length - 2],
+      ["PAYMENT", 5_000, view.statement.length - 2],
+    ]);
+    // Part of the payment still stands, so it is still a payment, with the returned part noted.
+    expect(view.payments).toMatchObject([{ id: paymentId, status: "SUCCEEDED", returnedCents: 15_000 }]);
+    expect(view.statement.at(-3)).toMatchObject({ kind: "PAYMENT", returnedCents: 15_000 });
+    // The policyholder is told what is due and why, and the rows add up.
+    expect(view.dueBecause.map((r) => r.netCents)).toEqual([10_000, 5_000]);
+  });
+
+  it("never takes back more than was paid", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    const paid = GL + CYBER_FROM_OCT_25;
+    await recordDispute(dispute(intent.id, paid - 1_000, "lost", "dp_first"));
+    await recordDispute(dispute(intent.id, 5_000, "lost", "dp_second"));
+    expect(await balance(policyId)).toBe(paid);
   });
 
   it("can't be refunded against", async () => {

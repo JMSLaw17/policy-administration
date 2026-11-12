@@ -33,8 +33,14 @@ export function useChangeFlow(policyId: string) {
   // preview, while the preview is loading, or after it. Confirmation always sends this one,
   // so the history records the reason the broker finished with, not an earlier draft.
   const latestReason = useRef<string | undefined>(undefined);
+  // Counts previews asked for and inputs changed. A preview's answer is only shown if nothing
+  // has moved on since it was asked for. Otherwise a preview for October 25 could arrive after
+  // the date field was changed to October 18, and confirming would save the 25th.
+  const generation = useRef(0);
 
+  /** Called by the forms whenever an input that affects the figures changes. */
   const reset = () => {
+    generation.current++;
     setRequest(null);
     setPreview(null);
     setError(null);
@@ -47,7 +53,10 @@ export function useChangeFlow(policyId: string) {
       setNotice(null);
       setChanged(null);
       latestReason.current = next.reason;
+      const asked = ++generation.current;
       const result = await previewChangeAction(policyId, next);
+      // The inputs changed while this was loading, so it describes something no longer on screen.
+      if (asked !== generation.current) return;
       if (result.ok) {
         // The reason may have been edited while the preview was loading.
         setRequest({ ...next, reason: latestReason.current });

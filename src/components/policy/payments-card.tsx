@@ -52,6 +52,9 @@ export function PaymentsCard({ view, actions }: { view: View; actions?: React.Re
                 <td className="px-5 py-2.5">
                   <StatusBadge status={p.status} />
                   {p.failureReason && <p className="mt-1 text-xs text-red-700">{p.failureReason}</p>}
+                  {p.returnedCents > 0 && p.status === "SUCCEEDED" && (
+                    <p className="mt-1 text-xs text-red-700">{formatUSD(p.returnedCents)} was later returned by the bank.</p>
+                  )}
                 </td>
                 <td className="px-5 py-2.5 font-mono text-xs text-slate-600">{p.stripePaymentIntentId ?? "—"}</td>
                 <td className="px-5 py-2.5">

@@ -37,6 +37,10 @@ export type StatementRow = {
   reversedBySeq: number | null;
   /** If this line is a reversal: the line it cancels out. */
   reversesLine: number | null;
+  /** If this line is money the bank took back from a payment: that payment's line. */
+  returnsLine: number | null;
+  /** On a payment line: how much of it the bank has since taken back. */
+  returnedCents: number;
   paymentId: string | null;
   refundId: string | null;
 };
@@ -109,7 +113,7 @@ export async function loadPolicyView(policyId: string) {
     include: {
       customer: true,
       transactions: { orderBy: { seq: "asc" }, include: { createdBy: { select: { name: true } } } },
-      ledger: { orderBy: { seq: "asc" } },
+      ledger: { orderBy: { seq: "asc" }, include: { paymentReturn: true } },
       payments: { orderBy: { createdAt: "asc" } },
       refunds: { orderBy: { createdAt: "asc" } },
       application: true,
@@ -129,6 +133,13 @@ export async function loadPolicyView(policyId: string) {
   const reversalOf = new Map(
     policy.ledger.filter((e) => e.reversesEntryId).map((e) => [e.reversesEntryId!, e]),
   );
+  // Money the bank took back, by the payment it was taken from.
+  const paymentLine = new Map(policy.ledger.filter((e) => e.paymentId).map((e) => [e.paymentId!, lineOf.get(e.id)!]));
+  const returnedFrom = new Map<string, number>();
+  for (const e of policy.ledger) {
+    if (!e.paymentReturn) continue;
+    returnedFrom.set(e.paymentReturn.paymentId, (returnedFrom.get(e.paymentReturn.paymentId) ?? 0) + e.amountCents);
+  }
   let running = 0;
   const statement: StatementRow[] = policy.ledger.map((e, i) => {
     running += e.amountCents;
@@ -147,6 +158,8 @@ export async function loadPolicyView(policyId: string) {
       reversedByLine: reversal ? lineOf.get(reversal.id)! : null,
       reversedBySeq: reversal ? seqOf(reversal.postedByTransactionId) : null,
       reversesLine: e.reversesEntryId ? lineOf.get(e.reversesEntryId)! : null,
+      returnsLine: e.paymentReturn ? (paymentLine.get(e.paymentReturn.paymentId) ?? null) : null,
+      returnedCents: e.paymentId ? (returnedFrom.get(e.paymentId) ?? 0) : 0,
       paymentId: e.paymentId,
       refundId: e.refundId,
     };
@@ -288,6 +301,8 @@ export async function loadPolicyView(policyId: string) {
       failureReason: p.failureReason,
       createdAt: p.createdAt.toISOString(),
       statementLine: statement.find((r) => r.paymentId === p.id)?.line ?? null,
+      /** How much of this payment the bank has since taken back. */
+      returnedCents: returnedFrom.get(p.id) ?? 0,
     })),
     refunds: policy.refunds.map((r) => ({
       id: r.id,
@@ -334,7 +349,7 @@ function reasonsForBalance(history: HistoryEntry[], statement: StatementRow[], b
   });
   const since = statement.slice(from);
   // If a payment was taken back by the bank in that time, that is the reason, and it is shown as such.
-  const paymentReturned = since.some((row) => row.kind === "PAYMENT" && row.reversesLine !== null);
+  const paymentReturned = since.some((row) => row.returnsLine !== null);
 
   const changes = history.filter((entry) => entry.netCents !== 0);
   let sum = 0;
