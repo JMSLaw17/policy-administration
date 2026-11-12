@@ -64,8 +64,10 @@ test("pay, add coverage, pay, correct the date, decline, pay, correct again with
     await broker.locator("#history-2").getByRole("button", { name: "Correct this" }).click();
     const form = broker.getByTestId("correct-2");
     await form.locator('input[name="correctedDate"]').fill("2026-10-25");
-    await form.locator('input[name="correctionReason"]').fill("Coverage began a week earlier than recorded");
+    await form.locator('input[name="correctionReason"]').fill("Draft reason");
     await form.getByRole("button", { name: "Preview correction" }).click();
+    // The reason is rewritten after the preview. The one on screen at confirmation is the one saved.
+    await form.locator('input[name="correctionReason"]').fill("Coverage began a week earlier than recorded");
     const preview = form.getByTestId("preview");
     await expect(preview).toContainText("Reversal: Cyber Liability: added from Nov 1, 2026");
     await expect(preview).toContainText("-$668.00");
@@ -103,6 +105,8 @@ test("pay, add coverage, pay, correct the date, decline, pay, correct again with
       await expect(summary.getByTestId("summary-refunds")).toHaveText("$0.00");
       await expect(summary.getByTestId("summary-balance")).toHaveText("$14.00");
     }
+    await expect(broker.locator("#history-3")).toContainText("Reason: Coverage began a week earlier than recorded");
+    await expect(broker.locator("#history")).not.toContainText("Draft reason");
     // The policyholder can read the correction but can't make one.
     await expect(holder.getByRole("button", { name: "Correct this" })).toHaveCount(0);
   });

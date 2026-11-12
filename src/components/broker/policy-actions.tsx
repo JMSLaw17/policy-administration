@@ -32,6 +32,12 @@ export function EditCoverageCard({
   const defaultDate = today < startDate ? startDate : today >= endDate ? startDate : today;
   const [date, setDate] = useState(defaultDate);
   const [reason, setReason] = useState("");
+  // The reason can be edited after the preview. It goes to the flow as well, so the
+  // one saved is the one on screen when the broker confirms, not the one at preview time.
+  const changeReason = (value: string) => {
+    setReason(value);
+    flow.setReason(value);
+  };
 
   // Which coverages are on from the chosen date onward.
   const onFrom = (d: ISODate) =>
@@ -103,7 +109,7 @@ export function EditCoverageCard({
         </div>
         <label className="mt-4 block">
           <span className="text-sm font-medium text-slate-700">Reason (optional)</span>
-          <input value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} />
+          <input value={reason} onChange={(e) => changeReason(e.target.value)} className={inputClass} />
         </label>
 
         {!flow.preview && (
@@ -148,6 +154,12 @@ export function CancelCard({
   const flow = useChangeFlow(policyId);
   const [date, setDate] = useState(today < startDate ? startDate : today > endDate ? endDate : today);
   const [reason, setReason] = useState("");
+  // The reason can be edited after the preview. It goes to the flow as well, so the
+  // one saved is the one on screen when the broker confirms, not the one at preview time.
+  const changeReason = (value: string) => {
+    setReason(value);
+    flow.setReason(value);
+  };
 
   return (
     <Card
@@ -173,7 +185,7 @@ export function CancelCard({
           </label>
           <label className="block">
             <span className="text-sm font-medium text-slate-700">Reason (optional)</span>
-            <input value={reason} onChange={(e) => setReason(e.target.value)} className={inputClass} />
+            <input value={reason} onChange={(e) => changeReason(e.target.value)} className={inputClass} />
           </label>
         </div>
         {!flow.preview && (
@@ -221,6 +233,12 @@ export function CorrectControl({
   const [open, setOpen] = useState(false);
   const [date, setDate] = useState(event.type === "ISSUE" ? event.startDate : event.effectiveDate);
   const [reason, setReason] = useState("");
+  // The reason can be edited after the preview. It goes to the flow as well, so the
+  // one saved is the one on screen when the broker confirms, not the one at preview time.
+  const changeReason = (value: string) => {
+    setReason(value);
+    flow.setReason(value);
+  };
   const [issued, setIssued] = useState<string[]>(
     event.type === "ISSUE" ? event.coverages.map((c) => c.code) : [],
   );
@@ -335,7 +353,7 @@ export function CorrectControl({
         <input
           name="correctionReason"
           value={reason}
-          onChange={(e) => setReason(e.target.value)}
+          onChange={(e) => changeReason(e.target.value)}
           placeholder="e.g. Coverage actually began a week earlier than recorded"
           className={inputClass}
         />

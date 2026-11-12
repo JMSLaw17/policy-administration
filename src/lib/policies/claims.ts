@@ -56,10 +56,13 @@ export async function fileClaim(input: {
       `${coverage.name} wasn't in force on ${formatDate(input.lossDate)}, so this loss isn't covered by the policy.`,
     );
   }
-  const count = await db.claim.count();
+  // The number comes from a database counter (a Postgres sequence), which never hands out
+  // the same one twice, so claims filed at the same moment can't collide. As with policy
+  // numbers, a number is used up even if filing then fails, so there can be gaps.
+  const [{ next }] = await db.$queryRaw<{ next: bigint }[]>`SELECT nextval('"claim_number_seq"') AS next`;
   return db.claim.create({
     data: {
-      claimNumber: `CLM-${input.lossDate.slice(0, 4)}-${String(count + 1).padStart(4, "0")}`,
+      claimNumber: `CLM-${input.lossDate.slice(0, 4)}-${String(next).padStart(4, "0")}`,
       policyId: input.policyId,
       coverageCode: coverage.code,
       lossDate: toJSDate(input.lossDate),
@@ -76,14 +79,21 @@ export type ClaimDecision =
 
 export async function decideClaim(claimId: string, decision: ClaimDecision, userId: string) {
   const claim = await db.claim.findUniqueOrThrow({ where: { id: claimId } });
-  if (claim.status !== "SUBMITTED") throw new PolicyRuleError("This claim has already been decided.");
+  const alreadyDecided = () => new PolicyRuleError("This claim has already been decided.");
+  if (claim.status !== "SUBMITTED") throw alreadyDecided();
+
+  // The decision is written only if the claim is still waiting for one, and that check is
+  // part of the write. Two brokers deciding at the same moment can't both succeed: the
+  // second finds nothing to update and is told the claim has been decided.
+  const decide = async (data: Parameters<typeof db.claim.updateMany>[0]["data"]) => {
+    const { count } = await db.claim.updateMany({ where: { id: claimId, status: "SUBMITTED" }, data });
+    if (count !== 1) throw alreadyDecided();
+    return db.claim.findUniqueOrThrow({ where: { id: claimId } });
+  };
 
   if (decision.decision === "DENY") {
     if (!decision.note.trim()) throw new PolicyRuleError("Give the reason for denying the claim.");
-    return db.claim.update({
-      where: { id: claimId },
-      data: { status: "DENIED", decisionNote: decision.note.trim(), decidedById: userId, decidedAt: new Date() },
-    });
+    return decide({ status: "DENIED", decisionNote: decision.note.trim(), decidedById: userId, decidedAt: new Date() });
   }
 
   const approved = decision.approvedLossCents;
@@ -99,18 +109,15 @@ export async function decideClaim(claimId: string, decision: ClaimDecision, user
     );
   }
   const limitCents = getCoverage(claim.coverageCode).limitCents;
-  return db.claim.update({
-    where: { id: claimId },
-    data: {
-      status: "APPROVED",
-      approvedLossCents: approved,
-      deductibleCents: CLAIM_DEDUCTIBLE_CENTS,
-      limitCents,
-      payoutCents: claimPayout(approved, CLAIM_DEDUCTIBLE_CENTS, limitCents),
-      decisionNote: decision.note?.trim() || null,
-      decidedById: userId,
-      decidedAt: new Date(),
-    },
+  return decide({
+    status: "APPROVED",
+    approvedLossCents: approved,
+    deductibleCents: CLAIM_DEDUCTIBLE_CENTS,
+    limitCents,
+    payoutCents: claimPayout(approved, CLAIM_DEDUCTIBLE_CENTS, limitCents),
+    decisionNote: decision.note?.trim() || null,
+    decidedById: userId,
+    decidedAt: new Date(),
   });
 }
 

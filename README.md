@@ -85,6 +85,8 @@ These rules live in `src/lib/engine` (pure functions, no database) and are used 
    - A refund is saved before Stripe is contacted and resumed with the same key until its outcome is known, so an interruption can neither strand a credit nor refund it twice.
    - A signed application issues exactly one policy, and a renewal is created only if it is still the one the broker was shown.
    - An amount shown on a Pay button is never raised, and a completed payment is never set back to pending by late news.
+   - A refund that fails after Stripe first reported it succeeded, or a payment the bank later takes back, is cancelled out by a second line on the statement, once, and the original line stays.
+10. **Less than $0.50 can't be collected.** Stripe's minimum charge is $0.50. A smaller amount due stays on the statement and is collected with the next payment.
    - The Pay button shows the amount Stripe holds, and asks the customer to agree if it has changed since they last saw it.
    - A broker's confirmation is refused, and the new figures shown, if a payment or another change landed after the preview.
 
@@ -109,6 +111,8 @@ The demo scenario button skips the DocuSign signature and backdates its own hist
 - **Pay in full only, no installments.** This is the choice we'd most like to discuss. Installments multiply the states of "amount due" (scheduled, due, overdue, partly paid) without exercising anything new in the pro-rata logic the brief focuses on. Pay-in-full keeps one balance per policy, so every amount stays easy to trace.
 - **One product, flat prices.** A Small Business Package with three coverages at fixed annual prices. No rating factors such as industry, revenue, limits, or deductibles.
 - **No taxes, fees, or surcharges.**
+- **No small-balance write-off.** A few cents left due are carried to the next payment, not written off.
+- **Disputes** are handled only once they are lost: a returned bank payment, or a card chargeback the customer won. An open card dispute isn't shown.
 - **No short-rate penalty or minimum earned premium** on cancellation.
 - **Fixed 12-month term.** No short-term policies or term extensions.
 - **Renewals** can be created at any time and need no new application. A real system offers them 60 to 90 days out, sends a notice, and lapses an unpaid renewal after a grace period. We show the premium as due on the new term's start date and stop there.
@@ -134,7 +138,7 @@ Each of these is recorded with its reasoning in [DECISIONS.md](DECISIONS.md).
 | Command | What it covers |
 |---|---|
 | `npm run check` | Typecheck, lint, and `npm test`: the money rules, the whole workflow against a local test database (including the scenario above), and the payment rules with a stand-in for Stripe. |
-| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, two checkouts at once, a refund resumed after an interruption, and the demo scenario. |
+| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, two checkouts at once, a refund resumed after an interruption, a refund that Stripe accepts and then fails (this one waits about two minutes for Stripe), and the demo scenario. |
 | `npm run test:e2e` | A real browser (Playwright) running the scenario end to end, typing test cards into Stripe's own card form. Also covers the amount changing while the pay form is open, and a payment landing between a broker's preview and confirmation. |
 | `npm run smoke` | Signs in to the deployed site as each role and opens the main pages. Read-only. |
 | `npm run test:deployed` | Refunds and claims in a browser against the deployed site. Changes data. |

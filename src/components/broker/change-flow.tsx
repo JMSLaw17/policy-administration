@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { applyChangeAction, previewChangeAction } from "@/app/broker/actions";
 import { ButtonLabel, dangerButton, inputClass, primaryButton, secondaryButton } from "@/components/ui";
@@ -29,6 +29,11 @@ export function useChangeFlow(policyId: string) {
   /** Set when a confirmation was refused because the figures had moved since the preview. */
   const [changed, setChanged] = useState<string | null>(null);
 
+  // The reason as it stands on screen right now. It can be typed at any time: before the
+  // preview, while the preview is loading, or after it. Confirmation always sends this one,
+  // so the history records the reason the broker finished with, not an earlier draft.
+  const latestReason = useRef<string | undefined>(undefined);
+
   const reset = () => {
     setRequest(null);
     setPreview(null);
@@ -41,9 +46,11 @@ export function useChangeFlow(policyId: string) {
       setDone(false);
       setNotice(null);
       setChanged(null);
+      latestReason.current = next.reason;
       const result = await previewChangeAction(policyId, next);
       if (result.ok) {
-        setRequest(next);
+        // The reason may have been edited while the preview was loading.
+        setRequest({ ...next, reason: latestReason.current });
         setPreview(result.preview);
         setError(null);
       } else {
@@ -56,7 +63,7 @@ export function useChangeFlow(policyId: string) {
     startTransition(async () => {
       if (!request || !preview) return;
       // The preview's fingerprint goes with the confirmation, so what is saved is what was shown.
-      const result = await applyChangeAction(policyId, request, preview.fingerprint);
+      const result = await applyChangeAction(policyId, { ...request, reason: latestReason.current }, preview.fingerprint);
       if (result.ok) {
         reset();
         setDone(true);
@@ -77,11 +84,14 @@ export function useChangeFlow(policyId: string) {
 
   /** Switches what happens to the renewal, and recalculates the preview for that choice. */
   const chooseRenewal = (choice: RenewalChoice) => {
-    if (request) runPreview({ ...request, renewal: choice });
+    if (request) runPreview({ ...request, reason: latestReason.current, renewal: choice });
   };
 
   /** The reason can still be typed after the preview, because a gap can only be saved with one. */
-  const setReason = (reason: string) => setRequest((r) => (r ? { ...r, reason } : r));
+  const setReason = (reason: string) => {
+    latestReason.current = reason;
+    setRequest((r) => (r ? { ...r, reason } : r));
+  };
 
   return { pending, preview, request, error, done, notice, changed, runPreview, confirm, reset, chooseRenewal, setReason };
 }

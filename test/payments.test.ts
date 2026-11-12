@@ -1,7 +1,15 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type Stripe from "stripe";
 import { db } from "@/lib/db";
-import { reconcilePending, recordPaymentIntent, refundCredit, startPayment, syncOpenPayments } from "@/lib/policies/payments";
+import {
+  reconcilePending,
+  recordDispute,
+  recordPaymentIntent,
+  recordRefund,
+  refundCredit,
+  startPayment,
+  syncOpenPayments,
+} from "@/lib/policies/payments";
 import { applyChange, issuePolicy } from "@/lib/policies/service";
 import { loadPolicyView } from "@/lib/policies/view";
 
@@ -449,6 +457,161 @@ describe("telling the broker about a refund", () => {
     // And nothing more is refunded.
     expect(await refundCredit(policyId)).toMatchObject({ refundedCents: 0, pendingCents: 0 });
     expect(fake.refunds).toHaveLength(1);
+  });
+});
+
+describe("a refund that Stripe reports as succeeded and later as failed", () => {
+  it("keeps the refund line, cancels it out once, and puts the customer back in credit", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    expect(await refundCredit(policyId)).toMatchObject({ refundedCents: WEEK_OF_CYBER });
+    expect(await balance(policyId)).toBe(0);
+
+    // Days later the customer's bank turns the refund away, and Stripe changes it to failed.
+    const failed = { ...fake.refunds[0], status: "failed", failure_reason: "expired_or_canceled_card" } as unknown as Stripe.Refund;
+    await recordRefund(failed);
+
+    // The customer is owed the money again, and the statement shows both the refund and its failure.
+    expect(await balance(policyId)).toBe(-WEEK_OF_CYBER);
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.statement.slice(-2)).toMatchObject([
+      { kind: "REFUND", amountCents: WEEK_OF_CYBER, reversedByLine: view.statement.length },
+      {
+        kind: "REFUND",
+        amountCents: -WEEK_OF_CYBER,
+        reversesLine: view.statement.length - 1,
+        description: "Refund failed and was not paid out: The card it was going back to has expired or been cancelled.",
+      },
+    ]);
+    expect(view.totals.refundedCents).toBe(0);
+    expect(view.refunds).toMatchObject([{ status: "FAILED", failureReason: "The card it was going back to has expired or been cancelled." }]);
+
+    // Hearing about the failure again, or a stale "succeeded", changes nothing.
+    await recordRefund(failed);
+    await recordRefund({ ...failed, status: "succeeded" } as Stripe.Refund);
+    expect(await balance(policyId)).toBe(-WEEK_OF_CYBER);
+    expect((await loadPolicyView(policyId))!.statement).toHaveLength(view.statement.length);
+
+    // The credit is there for the broker to resolve. Retry refund sends a new refund.
+    expect(await refundCredit(policyId)).toMatchObject({ refundedCents: WEEK_OF_CYBER });
+    expect(fake.refunds).toHaveLength(2);
+    expect(await balance(policyId)).toBe(0);
+  });
+
+  it("just marks a refund failed if it never reached the statement", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    fake.refundStatus = "pending";
+    await refundCredit(policyId);
+    const linesBefore = (await loadPolicyView(policyId))!.statement.length;
+
+    await recordRefund({ ...fake.refunds[0], status: "failed", failure_reason: "declined" } as unknown as Stripe.Refund);
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.statement).toHaveLength(linesBefore);
+    expect(view.balanceCents).toBe(-WEEK_OF_CYBER);
+    expect(view.refunds).toMatchObject([{ status: "FAILED" }]);
+  });
+});
+
+describe("a payment the customer's bank takes back after it cleared", () => {
+  const dispute = (intentId: string, amount: number, status = "lost") =>
+    ({ id: "dp_1", payment_intent: intentId, amount, status, reason: "insufficient_funds" }) as unknown as Stripe.Dispute;
+
+  it("keeps the payment line, cancels it out once, and makes the amount due again", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    expect(await balance(policyId)).toBe(0);
+    const paid = GL + CYBER_FROM_OCT_25;
+
+    // A dispute that is still open isn't acted on. Once it is lost, the money is gone.
+    await recordDispute(dispute(intent.id, paid, "needs_response"));
+    expect(await balance(policyId)).toBe(0);
+    await recordDispute(dispute(intent.id, paid));
+
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.balanceCents).toBe(paid);
+    expect(view.statement.slice(-2)).toMatchObject([
+      { kind: "PAYMENT", amountCents: -paid, reversedByLine: view.statement.length },
+      {
+        kind: "PAYMENT",
+        amountCents: paid,
+        reversesLine: view.statement.length - 1,
+        description: "Payment returned by the bank (insufficient funds)",
+      },
+    ]);
+    expect(view.totals.paidCents).toBe(0);
+    expect(view.payments).toMatchObject([{ id: paymentId, status: "FAILED", failureReason: "Returned by the bank after it had cleared." }]);
+    // The policyholder is told why the amount is due again.
+    expect(view.dueBecause.map((r) => [r.title, r.netCents])).toEqual([
+      ["Payment returned by the bank (insufficient funds)", paid],
+    ]);
+
+    // Hearing about it again changes nothing, and neither does Stripe still calling the payment "succeeded".
+    await recordDispute(dispute(intent.id, paid));
+    await stripeConfirms(intent);
+    await reconcilePending(policyId);
+    const after = (await loadPolicyView(policyId))!;
+    expect(after.balanceCents).toBe(paid);
+    expect(after.statement).toHaveLength(view.statement.length);
+    expect(after.payments[0].status).toBe("FAILED");
+
+    // The customer can pay again, with a new payment.
+    const again = await startPayment(policyId);
+    expect(again.amountCents).toBe(paid);
+    expect(again.clientSecret).not.toBe(`${intent.id}_secret`);
+  });
+
+  it("can't be refunded against", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    await recordDispute(dispute(intent.id, GL + CYBER_FROM_OCT_25));
+    // A later correction lowers what is owed. Nothing was paid in the end, so nothing is refunded.
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    expect(await refundCredit(policyId)).toMatchObject({ refundedCents: 0, pendingCents: 0 });
+    expect(fake.refunds).toHaveLength(0);
+    expect(await balance(policyId)).toBe(GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER);
+  });
+});
+
+describe("an amount due that is too small to collect", () => {
+  /** A paid-up policy that then owes four cents, as a correction across a leap year can leave. */
+  async function policyOwingFourCents() {
+    const { policyId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    await db.ledgerEntry.create({ data: { policyId, kind: "CHARGE", amountCents: 4, description: "Cyber Liability: 7 more days" } });
+    return policyId;
+  }
+
+  it("is kept on the statement, and no payment is started for it", async () => {
+    const policyId = await policyOwingFourCents();
+    await expect(startPayment(policyId)).rejects.toThrow(/\$0\.04 is less than \$0\.50, the smallest amount that can be collected/);
+    expect(await balance(policyId)).toBe(4);
+    expect(fake.intents.size).toBe(1); // only the payment already made
+    expect(await db.payment.count({ where: { policyId, status: "INITIATED" } })).toBe(0);
+
+    // The next charge takes it over the minimum, and the four cents are collected with it.
+    await db.ledgerEntry.create({ data: { policyId, kind: "CHARGE", amountCents: 1_400, description: "Cyber Liability: a week more" } });
+    expect((await startPayment(policyId)).amountCents).toBe(1_404);
+  });
+
+  it("closes a payment form that was open when the amount dropped below the minimum", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "requires_payment_method");
+    // All but four cents is settled another way while the form is open.
+    await db.ledgerEntry.create({
+      data: { policyId, kind: "CREDIT", amountCents: -(GL + CYBER_FROM_OCT_25 - 4), description: "Unused days credited" },
+    });
+    await syncOpenPayments(policyId);
+    expect(intent.status).toBe("canceled");
+    expect((await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).status).toBe("FAILED");
+    expect(await balance(policyId)).toBe(4);
   });
 });
 

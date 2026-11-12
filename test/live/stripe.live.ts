@@ -8,6 +8,7 @@ import {
   PaymentError,
   reconcilePending,
   recordPaymentIntent,
+  recordRefund,
   refundCredit,
   startPayment,
 } from "@/lib/policies/payments";
@@ -30,6 +31,8 @@ import { loadPolicyView } from "@/lib/policies/view";
 const VISA = "pm_card_visa";
 const DECLINED = "pm_card_chargeDeclined";
 const BANK = "pm_usBankAccount_success";
+/** Stripe's test card whose refunds are accepted and then fail a moment later. */
+const REFUND_FAILS = "pm_card_refundFail";
 
 let brokerId: string;
 let customerId: string;
@@ -165,6 +168,38 @@ describe("Stripe test mode, end to end", () => {
     expect(v.refunds).toMatchObject([{ id: row.id, status: "SUCCEEDED", amountCents: 54_900, stripeRefundId: made.id }]);
     expect(v.statement.at(-1)).toMatchObject({ kind: "REFUND", amountCents: 54_900 });
   });
+
+  it("puts the customer back in credit when Stripe accepts a refund and then reports it failed", async () => {
+    const policy = await issuePolicy({ customerId, startDate: "2026-10-01", coverageCodes: ["GL"], userId: brokerId });
+    await payWith(policy.id, REFUND_FAILS);
+    const cancel = await applyChange(policy.id, { kind: "CANCELLATION", effectiveDate: "2027-04-01" }, brokerId);
+    await refundCredit(policy.id, cancel.transaction.id);
+    const refundId = (await view(policy.id)).refunds[0].stripeRefundId!;
+
+    // Stripe reports the refund as succeeded, so it is on the statement and nothing is owed.
+    expect(await view(policy.id)).toMatchObject({ balanceCents: 0, refunds: [{ status: "SUCCEEDED" }] });
+
+    // About two minutes later, in test mode, Stripe changes the refund to failed. Wait for
+    // that, then do what the webhook does: read the refund again and record it.
+    let refund = await stripe().refunds.retrieve(refundId);
+    for (let i = 0; i < 100 && refund.status !== "failed"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      refund = await stripe().refunds.retrieve(refundId);
+    }
+    expect(refund).toMatchObject({ status: "failed", failure_reason: "expired_or_canceled_card" });
+    await recordRefund(refund);
+    await recordRefund(refund); // hearing twice changes nothing
+
+    // The $549.00 is owed to the customer again. The refund line is still there, cancelled out by a second line.
+    const v = await view(policy.id);
+    expect(v.balanceCents).toBe(-54_900);
+    expect(v.refunds).toMatchObject([{ status: "FAILED", amountCents: 54_900 }]);
+    expect(v.totals.refundedCents).toBe(0);
+    expect(v.statement.filter((r) => r.kind === "REFUND").map((r) => r.amountCents)).toEqual([54_900, -54_900]);
+    expect(v.statement.at(-1)!.description).toBe(
+      "Refund failed and was not paid out: The card it was going back to has expired or been cancelled.",
+    );
+  }, 240_000);
 
   it("refunds a correction's credit, then a cancellation's, back to the cards", async () => {
     // The reviewers' scenario with real payments: policy paid, Cyber added and paid.

@@ -6,7 +6,7 @@ import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-
 import { loadStripe } from "@stripe/stripe-js";
 import { refreshPaymentsAction, startPaymentAction } from "@/app/portal/actions";
 import { ButtonLabel, Card, primaryButton, secondaryButton } from "@/components/ui";
-import { formatDate, formatUSD, signedUSD } from "@/lib/engine";
+import { formatDate, formatUSD, isBelowMinimumPayment, MIN_PAYMENT_CENTS, signedUSD } from "@/lib/engine";
 import type { DueReason } from "@/lib/policies/view";
 
 const shortDate = (iso: string) =>
@@ -54,6 +54,19 @@ export function PayCard({
   }, [waiting, policyId, router]);
 
   if (amountDueCents <= 0) return null;
+
+  // Stripe can't collect less than $0.50, so no payment is offered. The amount stays on the statement.
+  if (isBelowMinimumPayment(amountDueCents)) {
+    return (
+      <Card id="pay" title="Nothing to pay right now">
+        <p className="px-5 py-4 text-sm text-slate-700" data-testid="pay-below-minimum">
+          {formatUSD(amountDueCents)} is due, which is less than {formatUSD(MIN_PAYMENT_CENTS)}, the smallest amount
+          that can be collected by card or bank account. You don&apos;t need to do anything. It stays on your statement
+          and will be added to your next payment.
+        </p>
+      </Card>
+    );
+  }
 
   const begin = () =>
     startTransition(async () => {

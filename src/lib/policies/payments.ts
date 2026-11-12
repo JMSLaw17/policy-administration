@@ -1,7 +1,7 @@
 import "server-only";
 import Stripe from "stripe";
 import { db } from "@/lib/db";
-import { allocateRefund, formatUSD } from "@/lib/engine";
+import { allocateRefund, formatUSD, isBelowMinimumPayment, MIN_PAYMENT_CENTS } from "@/lib/engine";
 import { logIntegrationEvent } from "@/lib/integrations/log";
 import { stripe } from "@/lib/integrations/stripe";
 
@@ -20,7 +20,8 @@ export class PaymentError extends Error {}
 const CANCELLED_NOTE = "The payment was cancelled.";
 const SUPERSEDED_NOTE = "Not submitted. Replaced by a new payment when the amount due went up.";
 /** Reasons that mean an attempt is closed for good, as opposed to declined and open for another try. */
-const CLOSED_NOTES = [CANCELLED_NOTE, SUPERSEDED_NOTE];
+const RETURNED_NOTE = "Returned by the bank after it had cleared.";
+const CLOSED_NOTES = [CANCELLED_NOTE, SUPERSEDED_NOTE, RETURNED_NOTE];
 
 export async function balanceCents(policyId: string): Promise<number> {
   const sum = await db.ledgerEntry.aggregate({ where: { policyId }, _sum: { amountCents: true } });
@@ -113,6 +114,11 @@ async function reserveAttempt(policyId: string) {
     const sum = await tx.ledgerEntry.aggregate({ where: { policyId }, _sum: { amountCents: true } });
     const due = sum._sum.amountCents ?? 0;
     if (due <= 0) throw new PaymentError("Nothing is due on this policy.");
+    if (isBelowMinimumPayment(due)) {
+      throw new PaymentError(
+        `${formatUSD(due)} is less than ${formatUSD(MIN_PAYMENT_CENTS)}, the smallest amount that can be collected. It stays on the statement and will be added to the next payment.`,
+      );
+    }
 
     const open = await tx.payment.findFirst({
       where: { policyId, status: { in: ["INITIATED", "PENDING"] } },
@@ -190,13 +196,16 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
   if (intent.status === "succeeded") {
     await db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${payment.policyId} FOR UPDATE`;
+      const already = await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id }, include: { reversedBy: true } });
+      // A payment the bank later took back stays returned. Stripe still calls
+      // the PaymentIntent "succeeded", and hearing that again changes nothing.
+      if (already?.reversedBy) return;
       // The status is set whether or not the statement line is already there,
       // so a payment that some older news marked pending is put right.
       await tx.payment.update({
         where: { id: payment.id },
         data: { status: "SUCCEEDED", amountCents: intent.amount_received, failureReason: null },
       });
-      const already = await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id } });
       if (already) return;
       await tx.ledgerEntry.create({
         data: {
@@ -270,7 +279,8 @@ function methodLabel(intent: Stripe.PaymentIntent) {
  * higher amount.
  *
  *  - Less is due now: the unfinished payment is lowered to the new amount.
- *  - Nothing is due now: the unfinished payment is cancelled.
+ *  - Nothing is due now, or less than the smallest amount that can be
+ *    collected: the unfinished payment is cancelled.
  *  - More is due now: the payment is left alone. The customer agreed to the
  *    amount on their screen, so we never raise it behind their back. The rest
  *    simply stays due.
@@ -300,7 +310,7 @@ export async function syncOpenPayments(policyId: string) {
         await recordPaymentIntent(intent);
         continue;
       }
-      if (due <= 0) {
+      if (due <= 0 || isBelowMinimumPayment(due)) {
         const cancelled = await stripe().paymentIntents.cancel(intent.id);
         await recordPaymentIntent(cancelled);
         await logIntegrationEvent({
@@ -309,7 +319,10 @@ export async function syncOpenPayments(policyId: string) {
           eventType: "payment_intent.cancel",
           externalId: intent.id,
           policyId,
-          payload: { reason: "Nothing is due after a policy change", status: cancelled.status },
+          payload: {
+            reason: due <= 0 ? "Nothing is due after a policy change" : "The amount due is now too small to collect",
+            status: cancelled.status,
+          },
         });
       } else if (intent.amount > due) {
         const updated = await stripe().paymentIntents.update(intent.id, { amount: due });
@@ -570,10 +583,85 @@ export async function recordRefund(refund: Stripe.Refund) {
       });
     });
   } else if (refund.status === "failed" || refund.status === "canceled") {
-    if (row.status === "SUCCEEDED") return;
-    await db.refund.update({
-      where: { id: row.id },
-      data: { status: "FAILED", failureReason: refund.failure_reason ?? "The refund did not go through." },
+    const reason = refundFailureText(refund);
+    await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${row.policyId} FOR UPDATE`;
+      // Stripe can report a refund as succeeded and change it to failed days
+      // later, when the customer's bank turns it away. By then the refund is on
+      // the statement. That line is kept, and a second line cancels it out, so
+      // the statement shows what happened and the customer is in credit again.
+      // The second line points at the first, and a line can be reversed only
+      // once, so hearing about the failure again posts nothing.
+      const posted = await tx.ledgerEntry.findUnique({ where: { refundId: row.id }, include: { reversedBy: true } });
+      if (posted && !posted.reversedBy) {
+        await tx.ledgerEntry.create({
+          data: {
+            policyId: row.policyId,
+            kind: "REFUND",
+            amountCents: -posted.amountCents,
+            description: `Refund failed and was not paid out: ${reason}`,
+            reversesEntryId: posted.id,
+            postedByTransactionId: row.transactionId,
+          },
+        });
+      }
+      await tx.refund.update({ where: { id: row.id }, data: { status: "FAILED", failureReason: reason } });
     });
   }
+}
+
+/** Why Stripe says a refund failed, in a sentence. */
+function refundFailureText(refund: Stripe.Refund) {
+  const reasons: Record<string, string> = {
+    expired_or_canceled_card: "The card it was going back to has expired or been cancelled.",
+    lost_or_stolen_card: "The card it was going back to was reported lost or stolen.",
+    charge_for_pending_refund_disputed: "The original payment was disputed while the refund was on its way.",
+    insufficient_funds: "There weren't enough funds in the Stripe account to send it.",
+    declined: "The customer's bank declined it.",
+    merchant_request: "It was cancelled at the merchant's request.",
+  };
+  return reasons[refund.failure_reason ?? ""] ?? "The customer's bank or card issuer did not accept it.";
+}
+
+/* ------------------------------------------------------------------ */
+/* Payments taken back by the customer's bank                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A payment can be taken back after it has cleared. A bank debit can be
+ * returned by the customer's bank days later (not enough money, the account
+ * closed, the debit not authorised), and a card payment can be charged back.
+ * Stripe reports both as a dispute on the payment.
+ *
+ * Once the dispute is lost the money is gone for good (a returned bank debit
+ * is lost from the start and can't be contested). The payment's line stays on
+ * the statement and a second line cancels it out, so the amount is due again.
+ * As with a failed refund, the second line points at the first, which can be
+ * reversed only once, so the amount due is restored exactly once.
+ *
+ * Not handled: a card dispute that is still open (the money has left the
+ * account but may come back), and a refund already sent against the payment.
+ */
+export async function recordDispute(dispute: Stripe.Dispute) {
+  const intentId = typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent?.id;
+  if (!intentId || dispute.status !== "lost") return;
+  const payment = await db.payment.findUnique({ where: { stripePaymentIntentId: intentId } });
+  if (!payment) return;
+
+  await db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${payment.policyId} FOR UPDATE`;
+    const posted = await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id }, include: { reversedBy: true } });
+    if (!posted || posted.reversedBy) return;
+    await tx.ledgerEntry.create({
+      data: {
+        policyId: payment.policyId,
+        kind: "PAYMENT",
+        // Never more than the payment itself, which is stored as a negative amount.
+        amountCents: Math.min(dispute.amount, -posted.amountCents),
+        description: `Payment returned by the bank (${dispute.reason.replaceAll("_", " ")})`,
+        reversesEntryId: posted.id,
+      },
+    });
+    await tx.payment.update({ where: { id: payment.id }, data: { status: "FAILED", failureReason: RETURNED_NOTE } });
+  });
 }

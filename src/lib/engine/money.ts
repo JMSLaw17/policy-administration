@@ -19,6 +19,17 @@ export function proRate(annualPremiumCents: number, days: number, termDays: numb
   return Math.floor((2 * annualPremiumCents * days + termDays) / (2 * termDays));
 }
 
+/**
+ * The smallest amount that can be collected by card or bank debit: Stripe
+ * won't charge less than $0.50 in USD. A smaller amount due (a few cents left
+ * by rounding across a leap year, say) stays on the statement and is
+ * collected with the next amount that takes the total to $0.50 or more.
+ */
+export const MIN_PAYMENT_CENTS = 50;
+
+/** True for an amount that is owed but too small to collect on its own. */
+export const isBelowMinimumPayment = (cents: number) => cents > 0 && cents < MIN_PAYMENT_CENTS;
+
 /** 123456 -> "$1,234.56", -1400 -> "-$14.00" */
 export function formatUSD(cents: number): string {
   const sign = cents < 0 ? "-" : "";

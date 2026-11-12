@@ -2,7 +2,7 @@ import type Stripe from "stripe";
 import { db } from "@/lib/db";
 import { logIntegrationEvent } from "@/lib/integrations/log";
 import { stripe } from "@/lib/integrations/stripe";
-import { recordPaymentIntent, recordRefund } from "@/lib/policies/payments";
+import { recordDispute, recordPaymentIntent, recordRefund } from "@/lib/policies/payments";
 
 /**
  * Stripe tells us here when a payment or refund changes state. This, not the
@@ -21,12 +21,23 @@ export async function POST(request: Request) {
     return new Response("Invalid signature", { status: 400 });
   }
 
-  const object = event.data.object as { id?: string; metadata?: Record<string, string> | null };
+  const object = event.data.object as {
+    id?: string;
+    metadata?: Record<string, string> | null;
+    payment_intent?: string | { id: string } | null;
+  };
 
   // One Stripe account can serve several copies of this app (the deployed one,
   // a developer's machine, automated tests), and Stripe sends every event to
   // this address. Only act on, and log, events for policies this copy knows.
-  const policyId = object.metadata?.policyId;
+  // Payments and refunds carry the policy id we attached. A dispute carries
+  // nothing of ours, so its policy is found through the payment it is about.
+  let policyId = object.metadata?.policyId;
+  if (!policyId && event.type.startsWith("charge.dispute.") && object.payment_intent) {
+    const intentId = typeof object.payment_intent === "string" ? object.payment_intent : object.payment_intent.id;
+    const payment = await db.payment.findUnique({ where: { stripePaymentIntentId: intentId }, select: { policyId: true } });
+    policyId = payment?.policyId;
+  }
   const known = policyId ? await db.policy.findUnique({ where: { id: policyId }, select: { id: true } }) : null;
   if (!known) return Response.json({ received: true, ignored: "not one of this app's policies" });
 
@@ -54,6 +65,12 @@ export async function POST(request: Request) {
     case "refund.failed":
       await recordRefund(await stripe().refunds.retrieve(event.data.object.id));
       break;
+    // A payment taken back by the customer's bank: a returned bank debit, or a card chargeback.
+    case "charge.dispute.created":
+    case "charge.dispute.funds_withdrawn":
+    case "charge.dispute.closed":
+      await recordDispute(await stripe().disputes.retrieve(event.data.object.id));
+      break;
   }
 
   return Response.json({ received: true });
@@ -62,7 +79,7 @@ export async function POST(request: Request) {
 /** The parts of the event worth keeping in our log. */
 function summarise(event: Stripe.Event) {
   const o = event.data.object as unknown as Record<string, unknown>;
-  const keep = ["id", "object", "amount", "amount_received", "currency", "status", "payment_intent", "metadata", "failure_reason"];
+  const keep = ["id", "object", "amount", "amount_received", "currency", "status", "payment_intent", "metadata", "failure_reason", "reason"];
   const out: Record<string, unknown> = {};
   for (const k of keep) if (k in o) out[k] = o[k];
   const error = o.last_payment_error as { code?: string; message?: string } | undefined;

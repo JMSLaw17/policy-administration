@@ -611,6 +611,39 @@ describe("claims", () => {
   });
 });
 
+describe("claims handled by several people at once", () => {
+  const file = (policyId: string, description: string) =>
+    fileClaim({ policyId, coverageCode: "GL", lossDate: "2026-10-15", description, claimedCents: 400_000, userId: brokerId });
+
+  it("lets only one decision stand when two brokers decide at the same moment", async () => {
+    const policy = await issue();
+    const claim = await file(policy.id, "A customer slipped on a wet floor");
+    const results = await Promise.allSettled([
+      decideClaim(claim.id, { decision: "APPROVE", approvedLossCents: 350_000 }, brokerId),
+      decideClaim(claim.id, { decision: "DENY", note: "Not the business's liability" }, brokerId),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const refused = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(refused.reason.message).toMatch(/already been decided/);
+    // The claim holds exactly the decision that was reported as made.
+    const made = (results.find((r) => r.status === "fulfilled") as PromiseFulfilledResult<{ status: string }>).value;
+    const saved = await db.claim.findUniqueOrThrow({ where: { id: claim.id } });
+    expect(saved.status).toBe(made.status);
+    expect(saved.status === "APPROVED" ? saved.payoutCents : saved.decisionNote).toBe(
+      saved.status === "APPROVED" ? 300_000 : "Not the business's liability",
+    );
+  });
+
+  it("gives every claim its own number when several are filed at the same moment", async () => {
+    const policy = await issue();
+    const filed = await Promise.all(["one", "two", "three", "four", "five"].map((n) => file(policy.id, `Loss ${n}`)));
+    const numbers = filed.map((c) => c.claimNumber).sort();
+    expect(numbers).toEqual(["CLM-2026-0001", "CLM-2026-0002", "CLM-2026-0003", "CLM-2026-0004", "CLM-2026-0005"]);
+    expect(await db.claim.count()).toBe(5);
+  });
+});
+
 describe("confirming a renewal the broker was shown", () => {
   it("creates nothing if the expiring policy changed after the renewal was shown", async () => {
     const policy = await issue();

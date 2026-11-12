@@ -57,6 +57,8 @@ To look at the running app yourself: `npm run dev`, then sign in at http://local
 - If a newly added route returns 404 in development, restart the dev server.
 - DocuSign's consent redirect was registered for `http://localhost:3100`, so local signing is tested with `npm run dev -- -p 3100`.
 - In browser tests, Stripe's card form resizes as fields appear. Wait for it to settle before clicking Pay (see `payByCard` in `e2e/scenario.spec.ts`).
+- `npm run test:stripe` takes about three minutes. One test pays with Stripe's failing-refund test card and waits about two minutes for Stripe to change the refund from succeeded to failed.
+- The Stripe webhook endpoint must be subscribed to `charge.dispute.created`, `charge.dispute.funds_withdrawn` and `charge.dispute.closed` as well as the payment and refund events, or a payment returned by the bank is never recorded.
 - Stripe sends webhooks for every test payment to the deployed app, including payments made locally or by tests. The webhook handler ignores, and doesn't log, events whose policy isn't in its own database.
 
 ## The reviewers' scenario

@@ -206,7 +206,7 @@ export async function loadPolicyView(policyId: string) {
     statement.filter((r) => kinds.includes(r.kind)).reduce((sum, r) => sum + r.amountCents, 0);
   const totals: StatementTotals = {
     premiumCents: sumOf("CHARGE", "CREDIT", "REVERSAL"),
-    paidCents: -sumOf("PAYMENT"),
+    paidCents: 0 - sumOf("PAYMENT"), // "0 -" so that nothing paid is 0, not -0
     refundedCents: sumOf("REFUND"),
   };
 
@@ -327,19 +327,24 @@ function reasonsForBalance(history: HistoryEntry[], statement: StatementRow[], b
     netCents,
   });
 
-  const changes = history.filter((entry) => entry.netCents !== 0);
-  let sum = 0;
-  for (let i = changes.length - 1; i >= 0; i--) {
-    sum += changes[i].netCents;
-    if (sum === balanceCents) return changes.slice(i).map((entry) => forChange(entry, entry.netCents));
-  }
-
+  // Everything on the statement since the balance was last zero.
   let from = 0;
   statement.forEach((row, i) => {
     if (row.balanceAfterCents === 0) from = i + 1;
   });
+  const since = statement.slice(from);
+  // If a payment was taken back by the bank in that time, that is the reason, and it is shown as such.
+  const paymentReturned = since.some((row) => row.kind === "PAYMENT" && row.reversesLine !== null);
+
+  const changes = history.filter((entry) => entry.netCents !== 0);
+  let sum = 0;
+  for (let i = changes.length - 1; i >= 0 && !paymentReturned; i--) {
+    sum += changes[i].netCents;
+    if (sum === balanceCents) return changes.slice(i).map((entry) => forChange(entry, entry.netCents));
+  }
+
   const reasons: DueReason[] = [];
-  for (const row of statement.slice(from)) {
+  for (const row of since) {
     const entry = history.find((h) => h.seq === row.postedBySeq);
     if (row.kind === "PAYMENT" || row.kind === "REFUND" || !entry) {
       reasons.push({
