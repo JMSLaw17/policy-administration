@@ -22,7 +22,7 @@ All data is fictional. Both accounts use the password `demo-password`.
 | Integration | Status |
 |---|---|
 | Stripe (test mode): payments, webhooks, refunds | Live in test mode, tested locally and on the deployed app |
-| DocuSign (developer sandbox): e-signing the application | Live in the sandbox, tested locally |
+| DocuSign (developer sandbox): e-signing the application | Live in the sandbox, tested locally and on the deployed app, including the completion webhook |
 | Carrier, rating, underwriting | Simulated (flat rate table in this repo) |
 | Claim payments | Simulated (recorded in the app, no money moves) |
 | Paying commission to the broker | Not modelled (commission is calculated and shown only) |
