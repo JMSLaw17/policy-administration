@@ -62,10 +62,15 @@ export type HistoryEntry = {
   correctable: PolicyEvent | null;
 };
 
-/** A change whose premium is part of what is owed now. */
+/**
+ * One row of the explanation of what is owed now: a change to the policy, or a
+ * payment or refund. The rows always add up to the amount due.
+ */
 export type DueReason = {
-  /** The history entry, so the note can link to it. */
-  seq: number;
+  /** The history entry behind a change, so the note can link to it. Null for a payment or refund. */
+  seq: number | null;
+  /** The statement line of a payment or refund. Null for a change. */
+  line: number | null;
   title: string;
   /** What was changed and, for a correction, why the amount moved. */
   text: string;
@@ -274,7 +279,7 @@ export async function loadPolicyView(policyId: string) {
     history,
     balanceCents,
     totals,
-    dueBecause: reasonsForBalance(history, balanceCents),
+    dueBecause: reasonsForBalance(history, statement, balanceCents),
     payments: policy.payments.map((p) => ({
       id: p.id,
       amountCents: p.amountCents,
@@ -298,28 +303,62 @@ export async function loadPolicyView(policyId: string) {
 }
 
 /**
- * Which changes the amount due comes from. Payments settle the oldest premium
- * first, so whatever is still owed belongs to the newest changes: walk back
- * from the newest until they account for the balance. Usually that is one
- * entry, the change made since the customer last paid.
+ * Explains the amount due as rows that add up to it exactly.
+ *
+ * Payments settle the oldest premium first, so what is still owed belongs to
+ * the newest changes. Walking back from the newest change, the first point at
+ * which the changes add up to the amount due gives the explanation. Usually
+ * that is one entry: the change made since the customer last paid.
+ *
+ * If no run of recent changes comes to exactly the amount due (a payment
+ * covered part of a change), the explanation is instead everything on the
+ * statement since the balance was last zero, payments and refunds included.
+ * That always adds up, because it is how the balance got from zero to here.
  */
-function reasonsForBalance(history: HistoryEntry[], balanceCents: number): DueReason[] {
-  const reasons: DueReason[] = [];
-  let unexplained = balanceCents;
-  for (const entry of [...history].reverse()) {
-    if (unexplained <= 0) break;
-    if (entry.netCents === 0) continue;
-    reasons.unshift({
-      seq: entry.seq,
-      title: entry.title,
-      text: [entry.summary, entry.explanation].filter(Boolean).join(" "),
-      reason: entry.reason,
-      recordedAt: entry.createdAt,
-      netCents: entry.netCents,
-    });
-    unexplained -= entry.netCents;
+function reasonsForBalance(history: HistoryEntry[], statement: StatementRow[], balanceCents: number): DueReason[] {
+  if (balanceCents <= 0) return [];
+  const forChange = (entry: HistoryEntry, netCents: number): DueReason => ({
+    seq: entry.seq,
+    line: null,
+    title: entry.title,
+    text: [entry.summary, entry.explanation].filter(Boolean).join(" "),
+    reason: entry.reason,
+    recordedAt: entry.createdAt,
+    netCents,
+  });
+
+  const changes = history.filter((entry) => entry.netCents !== 0);
+  let sum = 0;
+  for (let i = changes.length - 1; i >= 0; i--) {
+    sum += changes[i].netCents;
+    if (sum === balanceCents) return changes.slice(i).map((entry) => forChange(entry, entry.netCents));
   }
-  return reasons;
+
+  let from = 0;
+  statement.forEach((row, i) => {
+    if (row.balanceAfterCents === 0) from = i + 1;
+  });
+  const reasons: DueReason[] = [];
+  for (const row of statement.slice(from)) {
+    const entry = history.find((h) => h.seq === row.postedBySeq);
+    if (row.kind === "PAYMENT" || row.kind === "REFUND" || !entry) {
+      reasons.push({
+        seq: null,
+        line: row.line,
+        title: row.description,
+        text: "",
+        reason: null,
+        recordedAt: row.postedAt,
+        netCents: row.amountCents,
+      });
+      continue;
+    }
+    // One row per change, however many statement lines it posted.
+    const existing = reasons.find((r) => r.seq === entry.seq);
+    if (existing) existing.netCents += row.amountCents;
+    else reasons.push(forChange(entry, row.amountCents));
+  }
+  return reasons.filter((r) => r.netCents !== 0);
 }
 
 const list = (codes: string[]) => codes.map(coverageName).join(", ");
@@ -393,24 +432,39 @@ function explainCorrection(rows: StatementRow[]): string | null {
     const after = premium.filter((r) => r.coverageCode === code && r.kind !== "REVERSAL");
     const oldAmount = -before.reduce((s, r) => s + r.amountCents, 0);
     const newAmount = after.reduce((s, r) => s + r.amountCents, 0);
-    const oldDays = before.reduce((s, r) => s + r.calc!.days, 0);
-    const newDays = after.reduce((s, r) => s + r.calc!.days, 0);
+    // Days paid for: a charge adds its days and a credit (unused days handed
+    // back, after a cancellation or removal) takes its days away. A reversal
+    // carries the opposite sign to the line it cancels, so flip it back.
+    const daysOf = (r: StatementRow) => Math.sign(r.kind === "REVERSAL" ? -r.amountCents : r.amountCents) * r.calc!.days;
+    const oldDays = before.reduce((s, r) => s + daysOf(r), 0);
+    const newDays = after.reduce((s, r) => s + daysOf(r), 0);
     const word = (cents: number) => (cents < 0 ? "credit" : "charge");
+    const plural = (n: number) => `${n} ${n === 1 ? "day" : "days"}`;
+    const amounts = `changes from ${formatUSD(Math.abs(oldAmount))} to ${formatUSD(Math.abs(newAmount))}`;
 
     if (before.length && after.length) {
-      const diff = newDays - oldDays;
       const { annualPremiumCents, termDays } = after[0].calc!;
       const daily =
         annualPremiumCents % termDays === 0 ? ` at ${formatUSD(annualPremiumCents / termDays)} a day` : "";
-      const days =
-        diff === 0
-          ? `the same ${newDays} days`
-          : `${Math.abs(diff)} ${diff > 0 ? "more" : "fewer"} ${Math.abs(diff) === 1 ? "day" : "days"} (${newDays} instead of ${oldDays})${daily}`;
-      sentences.push(
-        `${name} now counts ${days}, so its ${word(newAmount)} changes from ${formatUSD(Math.abs(oldAmount))} to ${formatUSD(Math.abs(newAmount))}.`,
-      );
+      // "7 more days (341 instead of 334) at $2.00 a day", for counts that are both on the same side.
+      const count = (now: number, was: number) =>
+        now === was
+          ? `the same ${plural(now)}`
+          : `${Math.abs(now - was)} ${now > was ? "more" : "fewer"} ${Math.abs(now - was) === 1 ? "day" : "days"} (${now} instead of ${was})${daily}`;
+      if (oldDays >= 0 && newDays >= 0) {
+        sentences.push(`${name} now counts ${count(newDays, oldDays)}, so its ${word(newAmount)} ${amounts}.`);
+      } else if (oldDays <= 0 && newDays <= 0) {
+        // Only days handed back are involved, so talk about the credit.
+        sentences.push(`${name} is now credited for ${count(-newDays, -oldDays)}, so its credit ${amounts}.`);
+      } else {
+        sentences.push(
+          `${name}: the ${word(oldAmount)} of ${formatUSD(Math.abs(oldAmount))} becomes a ${word(newAmount)} of ${formatUSD(Math.abs(newAmount))}.`,
+        );
+      }
     } else if (after.length) {
-      sentences.push(`${name} now has a ${word(newAmount)} of ${formatUSD(Math.abs(newAmount))} for ${newDays} days.`);
+      sentences.push(
+        `${name} now has a ${word(newAmount)} of ${formatUSD(Math.abs(newAmount))} for ${plural(Math.abs(newDays))}.`,
+      );
     } else {
       sentences.push(`The ${formatUSD(Math.abs(oldAmount))} ${word(oldAmount)} for ${name} no longer applies.`);
     }
@@ -422,7 +476,7 @@ function explainCorrection(rows: StatementRow[]): string | null {
   else if (net < 0) {
     sentences.push(
       refunded > 0
-        ? `In total, ${formatUSD(-net)} less is owed, and ${formatUSD(refunded)} was refunded to the card.`
+        ? `In total, ${formatUSD(-net)} less is owed, and ${formatUSD(refunded)} was refunded to the original payment method.`
         : `In total, ${formatUSD(-net)} less is owed.`,
     );
   } else sentences.push("The total owed doesn't change.");

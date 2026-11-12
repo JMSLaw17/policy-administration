@@ -90,9 +90,12 @@ export function PayCard({
             <p className="font-medium">Why this is due</p>
             <ul className="mt-1.5 space-y-2">
               {reasons.map((reason) => (
-                <li key={reason.seq} className="flex items-start justify-between gap-6">
+                <li key={reason.seq ?? `line-${reason.line}`} className="flex items-start justify-between gap-6">
                   <span>
-                    <a className="font-medium text-indigo-700 underline" href={`#history-${reason.seq}`}>
+                    <a
+                      className="font-medium text-indigo-700 underline"
+                      href={reason.seq ? `#history-${reason.seq}` : `#line-${reason.line}`}
+                    >
                       {reason.title}
                     </a>
                     , {shortDate(reason.recordedAt)}. {reason.text}
@@ -102,6 +105,13 @@ export function PayCard({
                 </li>
               ))}
             </ul>
+            {/* With more than one row, show that they come to the amount on the button. */}
+            {reasons.length > 1 && (
+              <p className="mt-2 flex justify-between gap-6 border-t border-indigo-200 pt-2 font-medium" data-testid="due-total">
+                <span>Amount due</span>
+                <span className="tabular-nums">{formatUSD(reasons.reduce((sum, r) => sum + r.netCents, 0))}</span>
+              </p>
+            )}
           </div>
         )}
         {!clientSecret && (
@@ -188,7 +198,13 @@ function PaymentForm({
     // The amount can be lowered while this form is open, after a broker's change.
     // Ask Stripe what it holds now, and never charge an amount that wasn't on the button.
     const current = await stripe.retrievePaymentIntent(clientSecret);
-    if (current.paymentIntent && current.paymentIntent.amount !== amount) {
+    if (!current.paymentIntent) {
+      // The amount couldn't be checked, so the payment isn't sent.
+      setSubmitting(false);
+      setError("We couldn't check the amount with Stripe, so nothing was charged. Please try again.");
+      return;
+    }
+    if (current.paymentIntent.amount !== amount) {
       await elements.fetchUpdates();
       setShown(amount);
       setAmount(current.paymentIntent.amount);

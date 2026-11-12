@@ -40,7 +40,7 @@ export function RenewalCard({ policyId, preview }: { policyId: string; preview: 
           </tbody>
         </table>
         <div className="mt-4">
-          <RenewButton policyId={policyId} />
+          <RenewButton policyId={policyId} previewed={preview.fingerprint} />
         </div>
       </div>
     </Card>

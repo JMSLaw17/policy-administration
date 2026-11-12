@@ -29,9 +29,9 @@ Creating a customer as the broker also creates a policyholder login with that cu
 2. In **Policy history**, click **Correct this** on entry #2 (the Cyber change). Move the effective date a week earlier and click **Preview correction**.
 3. The preview shows exactly what will be posted: a reversal of the original charge, the new charge with its formula, and the new amount due of **$14.00**. Confirm it.
 4. The statement now shows the original charge struck through and marked "Superseded by correction #3", the reversal, and the corrected charge. The history entry explains it in plain English: *"Cyber Liability now counts 7 more days … at $2.00 a day … In total, $14.00 more is owed."*
-5. Sign in as the policyholder shown on the customer's page. They see the same statement and explanation, and a **Pay $14.00** button with a "Why this is due" note beside it that repeats the correction in plain English.
+5. Sign in as the policyholder shown on the customer's page. They see the same statement and explanation, and a **Pay $14.00** button with a "Why this is due" note beside it that repeats the correction in plain English. Its rows always add up to the amount on the button.
 
-**Change the date to anything else** and the same thing happens. A later date gives the customer a credit, which the app refunds to their card through Stripe without anyone clicking anything. The same action can be corrected again and again; each correction starts from the current state.
+**Change the date to anything else** and the same thing happens. A later date gives the customer a credit, which the app refunds to the payment it came from, through Stripe, without anyone clicking anything. The same action can be corrected again and again; each correction starts from the current state.
 
 **The calculation**, which every statement line shows under "How was this calculated?":
 
@@ -77,13 +77,14 @@ These rules live in `src/lib/engine` (pure functions, no database) and are used 
 3. **Rounded per line.** Each line is rounded to the cent, halves up, and totals are sums of rounded lines.
 4. **Append-only.** Issue, coverage change, correction, and cancellation each post new lines. A correction reverses the affected lines and posts new ones. Rows are never updated or deleted.
 5. **One calculation, replayed.** Premium is always worked out by replaying the policy's history (`replay.ts`). A correction replays it with the corrected action in place, compares the result with the statement, and posts only the difference. A correction that would break a later action is refused with an explanation.
-6. **Balance = charges − payments + refunds.** Positive is the amount due. Negative is a credit, which first absorbs anything else owed and is then refunded to the card.
+6. **Balance = charges − payments + refunds.** Positive is the amount due. Negative is a credit, which first absorbs anything else owed and is then refunded to the payment it came from.
 7. **Stripe decides what was paid.** A payment or refund reaches the statement only when Stripe's servers confirm it, by webhook or by a direct status check. Hearing about it twice posts one line.
 8. **Cancellation is pro-rata with no penalty.** Refund = paid − earned.
 9. **Nothing is charged, refunded, or issued twice, and nothing is saved that wasn't shown.**
    - A policy has one open payment attempt, so two checkout tabs share one Stripe payment.
    - A refund is saved before Stripe is contacted and resumed with the same key until its outcome is known, so an interruption can neither strand a credit nor refund it twice.
-   - A signed application issues exactly one policy.
+   - A signed application issues exactly one policy, and a renewal is created only if it is still the one the broker was shown.
+   - An amount shown on a Pay button is never raised, and a completed payment is never set back to pending by late news.
    - The Pay button shows the amount Stripe holds, and asks the customer to agree if it has changed since they last saw it.
    - A broker's confirmation is refused, and the new figures shown, if a payment or another change landed after the preview.
 

@@ -1,5 +1,6 @@
 import "server-only";
 import { db } from "@/lib/db";
+import type { Prisma } from "@/generated/prisma/client";
 import {
   addOneYear,
   coveragesToRenew,
@@ -10,7 +11,7 @@ import {
   type ISODate,
 } from "@/lib/engine";
 import { buildSlots, toHistory } from "./history";
-import { issuePolicy } from "./service";
+import { issuePolicyIn, lockChain } from "./service";
 
 /**
  * Renewal: a new policy for the 12 months after the current term ends.
@@ -28,10 +29,24 @@ export type RenewalPreview = {
   endDate: ISODate;
   coverages: { code: string; annualPremiumCents: number; previousAnnualPremiumCents: number }[];
   premiumCents: number;
+  /**
+   * The renewal's terms as one string. The broker's click sends it back, and
+   * the renewal is only created if the terms are still these.
+   */
+  fingerprint: string;
 };
 
-async function planRenewal(policyId: string): Promise<RenewalPreview> {
-  const policy = await db.policy.findUnique({
+/** Thrown when the renewal the broker was shown is no longer the one that would be created. */
+export class RenewalChangedError extends PolicyRuleError {
+  constructor() {
+    super(
+      "This policy has changed since the renewal was shown, so the renewal would be different now. Nothing was created. Check the new term and premium, and renew again.",
+    );
+  }
+}
+
+async function planRenewal(client: Prisma.TransactionClient, policyId: string): Promise<RenewalPreview> {
+  const policy = await client.policy.findUnique({
     where: { id: policyId },
     include: { transactions: { orderBy: { seq: "asc" } }, renewal: { select: { policyNumber: true } } },
   });
@@ -50,26 +65,42 @@ async function planRenewal(policyId: string): Promise<RenewalPreview> {
     annualPremiumCents: getCoverage(c.code).annualPremiumCents,
     previousAnnualPremiumCents: c.annualPremiumCents,
   }));
+  const startDate = state.endDate;
+  const endDate = addOneYear(state.endDate);
+  const premiumCents = coverages.reduce((sum, c) => sum + c.annualPremiumCents, 0);
   return {
-    startDate: state.endDate,
-    endDate: addOneYear(state.endDate),
+    startDate,
+    endDate,
     coverages,
-    premiumCents: coverages.reduce((sum, c) => sum + c.annualPremiumCents, 0),
+    premiumCents,
+    fingerprint: JSON.stringify([startDate, endDate, coverages.map((c) => [c.code, c.annualPremiumCents]), premiumCents]),
   };
 }
 
-export const previewRenewal = planRenewal;
+export const previewRenewal = (policyId: string) => planRenewal(db, policyId);
 
-export async function renewPolicy(policyId: string, userId: string) {
-  const plan = await planRenewal(policyId);
-  const policy = await db.policy.findUniqueOrThrow({ where: { id: policyId } });
+/**
+ * Creates the renewal. `previewed` is the fingerprint of the renewal the
+ * broker was shown. The renewal is worked out again under a lock on the
+ * policy, and if a change to the expiring policy has made it different (a
+ * coverage added or removed, or the dates corrected), nothing is created and
+ * the broker is asked to look again.
+ */
+export async function renewPolicy(policyId: string, userId: string, previewed?: string) {
   try {
-    return await issuePolicy({
-      customerId: policy.customerId,
-      startDate: plan.startDate,
-      coverageCodes: plan.coverages.map((c) => c.code),
-      userId,
-      renewedFromId: policy.id,
+    return await db.$transaction(async (tx) => {
+      // The same lock a change to the policy takes, so the two can't interleave.
+      await lockChain(tx, policyId);
+      const plan = await planRenewal(tx, policyId);
+      if (previewed !== undefined && previewed !== plan.fingerprint) throw new RenewalChangedError();
+      const policy = await tx.policy.findUniqueOrThrow({ where: { id: policyId } });
+      return issuePolicyIn(tx, {
+        customerId: policy.customerId,
+        startDate: plan.startDate,
+        coverageCodes: plan.coverages.map((c) => c.code),
+        userId,
+        renewedFromId: policy.id,
+      });
     });
   } catch (error) {
     // The unique link stops two renewals of one policy, even if two brokers click at once.

@@ -14,7 +14,7 @@ import { issueFromApplication, sendApplication, withdrawApplication } from "@/li
 import { DemoScenarioError, loadDemoScenario } from "@/lib/policies/demo-scenario";
 import { updateCustomerDetails } from "@/lib/policies/details";
 import { refundCredit, syncOpenPayments } from "@/lib/policies/payments";
-import { renewPolicy } from "@/lib/policies/renewals";
+import { RenewalChangedError, renewPolicy } from "@/lib/policies/renewals";
 import {
   applyChange,
   issuePolicy,
@@ -229,7 +229,7 @@ export async function applyChangeAction(policyId: string, request: unknown, prev
 
   // The change is saved, on this policy and on any renewal that moved with it.
   // For each: if the customer has a payment form open, bring it down to the
-  // new amount due, and if the change left a credit, send it back to the card.
+  // new amount due, and if the change left a credit, send it back to the payment it came from.
   const notices: string[] = [];
   for (const affected of result.affected) {
     await syncOpenPayments(affected.policyId);
@@ -254,9 +254,20 @@ export async function retryRefundAction(policyId: string): Promise<{ notice?: st
 
 async function settleCredit(policyId: string, transactionId?: string): Promise<string | undefined> {
   try {
-    const { refundedCents, message } = await refundCredit(policyId, transactionId);
+    const { refundedCents, pendingCents, message } = await refundCredit(policyId, transactionId);
     if (message) return message;
-    if (refundedCents > 0) return `${formatUSD(refundedCents)} was refunded to the customer's card.`;
+    // A refund Stripe is still working on (a bank refund takes days) hasn't reached the customer
+    // or the statement yet, so it isn't reported as done.
+    const notes: string[] = [];
+    if (refundedCents > 0) {
+      notes.push(`${formatUSD(refundedCents)} was refunded to the customer's original payment method.`);
+    }
+    if (pendingCents > 0) {
+      notes.push(
+        `A refund of ${formatUSD(pendingCents)} to the customer's original payment method is on its way. It will show on the statement once Stripe confirms it.`,
+      );
+    }
+    if (notes.length > 0) return notes.join(" ");
   } catch (error) {
     if (error instanceof StripeNotConfiguredError) {
       return "The customer has a credit, but Stripe isn't set up here, so it wasn't refunded.";
@@ -273,12 +284,15 @@ function revalidatePolicy(policyId: string) {
 
 /* ------------------------------ Renew ------------------------------ */
 
-export async function renewPolicyAction(policyId: string): Promise<FormState> {
+/** `previewed` is the fingerprint of the renewal shown on the page, so what is created is what was shown. */
+export async function renewPolicyAction(policyId: string, previewed: string): Promise<FormState> {
   const user = await requireUser("BROKER");
   let renewalId: string;
   try {
-    renewalId = (await renewPolicy(policyId, user.id)).id;
+    renewalId = (await renewPolicy(policyId, user.id, String(previewed))).id;
   } catch (error) {
+    // The page is refreshed so the card shows the renewal as it would be now.
+    if (error instanceof RenewalChangedError) revalidatePolicy(policyId);
     if (error instanceof PolicyRuleError) return { error: error.message };
     throw error;
   }

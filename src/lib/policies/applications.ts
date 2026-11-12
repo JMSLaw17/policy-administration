@@ -120,17 +120,24 @@ export async function syncApplication(applicationId: string) {
   const application = await db.application.findUnique({ where: { id: applicationId } });
   if (!application?.docusignEnvelopeId || application.status !== "AWAITING_SIGNATURE") return application;
 
+  // DocuSign can take a while to answer, and the application may have moved on
+  // in the meantime (signed by another check, then issued). So each write only
+  // applies to an application that is still awaiting signature. Without that,
+  // a slow answer could set an issued application back to "signed", ready to
+  // be issued a second time.
   const envelope = await getEnvelopeStatus(application.docusignEnvelopeId);
+  const stillWaiting = { id: application.id, status: "AWAITING_SIGNATURE" as const };
   if (envelope.status === "completed") {
-    return db.application.update({
-      where: { id: application.id },
+    await db.application.updateMany({
+      where: stillWaiting,
       data: { status: "SIGNED", signedAt: envelope.completedAt ? new Date(envelope.completedAt) : new Date() },
     });
+  } else if (envelope.status === "declined" || envelope.status === "voided") {
+    await db.application.updateMany({ where: stillWaiting, data: { status: "VOIDED" } });
+  } else {
+    return application;
   }
-  if (envelope.status === "declined" || envelope.status === "voided") {
-    return db.application.update({ where: { id: application.id }, data: { status: "VOIDED" } });
-  }
-  return application;
+  return db.application.findUnique({ where: { id: application.id } });
 }
 
 export async function syncApplicationByEnvelope(envelopeId: string) {
@@ -154,18 +161,20 @@ export async function syncPendingApplications(customerId: string) {
 export async function issueFromApplication(applicationId: string, userId: string) {
   const application = await syncApplication(applicationId);
   if (!application) throw new PolicyRuleError("Application not found.");
-  if (application.status === "ISSUED") throw new PolicyRuleError("This application has already been issued.");
+  if (application.status === "ISSUED" || application.policyId) {
+    throw new PolicyRuleError("This application has already been issued.");
+  }
   if (application.status !== "SIGNED") {
     throw new PolicyRuleError("The policyholder hasn't signed this application yet.");
   }
   // The application is claimed and the policy created in one transaction. The
-  // claim only succeeds for an application that is still SIGNED, and it locks
-  // the row, so two brokers clicking at once (or a retry after a failure)
-  // can't both issue: the second waits, then finds it already issued. If
-  // creating the policy fails, the claim is undone with it.
+  // claim only succeeds for an application that is still SIGNED and has no
+  // policy, and it locks the row, so two brokers clicking at once (or a retry
+  // after a failure) can't both issue: the second waits, then finds it already
+  // issued. If creating the policy fails, the claim is undone with it.
   return db.$transaction(async (tx) => {
     const claimed = await tx.application.updateMany({
-      where: { id: application.id, status: "SIGNED" },
+      where: { id: application.id, status: "SIGNED", policyId: null },
       data: { status: "ISSUED" },
     });
     if (claimed.count !== 1) throw new PolicyRuleError("This application has already been issued.");
@@ -188,7 +197,12 @@ export async function withdrawApplication(applicationId: string) {
   if (application.docusignEnvelopeId) {
     await voidEnvelope(application.docusignEnvelopeId, "Withdrawn by the broker");
   }
-  await db.application.update({ where: { id: application.id }, data: { status: "VOIDED" } });
+  // Only if it is still unsigned: it may have been signed while DocuSign was being asked.
+  const withdrawn = await db.application.updateMany({
+    where: { id: application.id, status: "AWAITING_SIGNATURE" },
+    data: { status: "VOIDED" },
+  });
+  if (withdrawn.count !== 1) throw new PolicyRuleError("Only an unsigned application can be withdrawn.");
 }
 
 const escape = (text: string) =>

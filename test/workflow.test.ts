@@ -611,6 +611,136 @@ describe("claims", () => {
   });
 });
 
+describe("confirming a renewal the broker was shown", () => {
+  it("creates nothing if the expiring policy changed after the renewal was shown", async () => {
+    const policy = await issue();
+    const shown = await previewRenewal(policy.id);
+    expect(shown.premiumCents).toBe(109_500);
+
+    // Cyber is added to the expiring policy. The renewal would now carry it, at $1,825.00.
+    await addCyber(policy.id, "2026-11-01");
+    await expect(renewPolicy(policy.id, brokerId, shown.fingerprint)).rejects.toThrow(/has changed since the renewal was shown/);
+    expect(await db.policy.count()).toBe(1);
+
+    // Shown the new terms, the broker renews at the higher premium.
+    const fresh = await previewRenewal(policy.id);
+    expect(fresh.premiumCents).toBe(182_500);
+    const renewal = await renewPolicy(policy.id, brokerId, fresh.fingerprint);
+    expect((await loadPolicyView(renewal.id))!.balanceCents).toBe(182_500);
+  });
+
+  it("creates one renewal when two brokers click at the same moment", async () => {
+    const policy = await issue();
+    const shown = await previewRenewal(policy.id);
+    const results = await Promise.allSettled([
+      renewPolicy(policy.id, brokerId, shown.fingerprint),
+      renewPolicy(policy.id, brokerId, shown.fingerprint),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(await db.policy.count()).toBe(2);
+  });
+});
+
+describe("explaining the amount due", () => {
+  const moveCyber = (policyId: string, changeId: string, effectiveDate: string) =>
+    applyChange(
+      policyId,
+      { kind: "CORRECTION", transactionId: changeId, event: { type: "COVERAGE_CHANGE", effectiveDate, add: ["CYBER"], remove: [] } },
+      brokerId,
+    );
+  /** A payment of a set amount, as when a bank debit clears for what was due when it was made. */
+  async function pay(policyId: string, amountCents: number) {
+    const payment = await db.payment.create({ data: { policyId, amountCents, status: "SUCCEEDED" } });
+    await db.ledgerEntry.create({
+      data: { policyId, kind: "PAYMENT", amountCents: -amountCents, description: "Payment received (test)", paymentId: payment.id },
+    });
+  }
+  const rows = async (policyId: string) => {
+    const view = (await loadPolicyView(policyId))!;
+    const reasons = view.dueBecause.map((r) => [r.title, r.netCents]);
+    // Whatever is shown must come to the amount on the Pay button.
+    expect(view.dueBecause.reduce((sum, r) => sum + r.netCents, 0)).toBe(view.balanceCents);
+    return reasons;
+  };
+
+  it("lists a credit and a charge made while a payment was clearing, which together come to what is due", async () => {
+    const policy = await issue();
+    await payInFull(policy.id);
+    const change = await addCyber(policy.id, "2026-11-01"); // $668.00, paid by a bank debit that takes days
+    await moveCyber(policy.id, change.transaction.id, "2026-11-08"); // a week later: $14.00 less
+    await moveCyber(policy.id, change.transaction.id, "2026-10-25"); // two weeks earlier: $28.00 more
+    await pay(policy.id, 66_800); // the debit clears for the original amount
+
+    expect((await loadPolicyView(policy.id))!.balanceCents).toBe(1_400);
+    expect(await rows(policy.id)).toEqual([
+      ["Correction to #2", -1_400],
+      ["Correction to #3", 2_800],
+    ]);
+  });
+
+  it("falls back to everything since the balance was last zero when a payment covered part of a change", async () => {
+    const policy = await issue();
+    await payInFull(policy.id);
+    await addCyber(policy.id, "2026-11-01"); // $668.00
+    await pay(policy.id, 60_000); // an odd amount, so no run of changes comes to what is left
+
+    expect(await rows(policy.id)).toEqual([
+      ["Coverage changed", 66_800],
+      ["Payment received (test)", -60_000],
+    ]);
+  });
+
+  it("explains nothing when nothing is due", async () => {
+    const policy = await issue();
+    await payInFull(policy.id);
+    expect(await rows(policy.id)).toEqual([]);
+  });
+});
+
+describe("explaining a correction on a cancelled policy", () => {
+  it("counts the days the customer is paying for, not charged days plus credited days", async () => {
+    const policy = await issue(); // Oct 1, 2026 to Oct 1, 2027
+    await applyChange(policy.id, { kind: "CANCELLATION", effectiveDate: "2027-04-01" }, brokerId);
+    // 182 days of cover at $3.00 a day.
+    expect((await loadPolicyView(policy.id))!.balanceCents).toBe(54_600);
+
+    // The policy really started a day later. One day less is covered before the cancellation.
+    const issueId = (await db.policyTransaction.findFirstOrThrow({ where: { policyId: policy.id, seq: 1 } })).id;
+    await applyChange(
+      policy.id,
+      { kind: "CORRECTION", transactionId: issueId, event: { type: "ISSUE", startDate: "2026-10-02", coverages: ["GL"] } },
+      brokerId,
+    );
+    const view = (await loadPolicyView(policy.id))!;
+    expect(view.balanceCents).toBe(54_300);
+    expect(view.history.at(-1)!.explanation).toBe(
+      "General Liability now counts 1 fewer day (181 instead of 182) at $3.00 a day, so its charge changes from $546.00 to $543.00. In total, $3.00 less is owed.",
+    );
+  });
+
+  it("talks about the credit when only the date coverage was removed is corrected", async () => {
+    const policy = await issue(["GL", "CYBER"]);
+    const removal = await applyChange(
+      policy.id,
+      { kind: "COVERAGE_CHANGE", effectiveDate: "2027-04-01", add: [], remove: ["CYBER"] },
+      brokerId,
+    );
+    // Cyber really came off a week earlier, so a week more is handed back.
+    await applyChange(
+      policy.id,
+      {
+        kind: "CORRECTION",
+        transactionId: removal.transaction.id,
+        event: { type: "COVERAGE_CHANGE", effectiveDate: "2027-03-25", add: [], remove: ["CYBER"] },
+      },
+      brokerId,
+    );
+    expect((await loadPolicyView(policy.id))!.history.at(-1)!.explanation).toBe(
+      "Cyber Liability is now credited for 7 more days (190 instead of 183) at $2.00 a day, so its credit changes from $366.00 to $380.00. In total, $14.00 less is owed.",
+    );
+  });
+});
+
 describe("confirming a change the broker previewed", () => {
   it("saves nothing if the figures have moved since the preview, and shows the new ones", async () => {
     const policy = await issue();
@@ -691,6 +821,17 @@ describe("issuing from a signed application", () => {
     // A later retry is refused too.
     await expect(issueFromApplication(application.id, brokerId)).rejects.toThrow(/already been issued/);
     expect(await db.policy.count()).toBe(1);
+  });
+
+  it("can't be issued twice even if a late status check sets it back to signed", async () => {
+    const application = await signedApplication();
+    const policy = await issueFromApplication(application.id, brokerId);
+
+    // What a slow DocuSign answer used to do: write "signed" over an application that had since been issued.
+    await db.application.update({ where: { id: application.id }, data: { status: "SIGNED" } });
+    await expect(issueFromApplication(application.id, brokerId)).rejects.toThrow(/already been issued/);
+    expect(await db.policy.count()).toBe(1);
+    expect((await db.application.findUniqueOrThrow({ where: { id: application.id } })).policyId).toBe(policy.id);
   });
 
   it("leaves the application signed, with no policy, if issuing fails part-way", async () => {

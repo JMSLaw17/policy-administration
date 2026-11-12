@@ -533,7 +533,7 @@ function followStep(step: Step): FollowStep {
 }
 
 /** Locks a policy, the policies it renews, and its renewals, always in the same order. */
-async function lockChain(tx: Tx, policyId: string) {
+export async function lockChain(tx: Tx, policyId: string) {
   let first = policyId;
   for (;;) {
     const p = await tx.policy.findUnique({ where: { id: first }, select: { renewedFromId: true } });

@@ -243,6 +243,10 @@ test("the Pay button shows what Stripe will collect, and asks again when the amo
   await expect(changed).toContainText("It was $14.00 and is now $28.00");
   await expect(payButton(holder)).toHaveText("Pay $28.00");
   await expect(payButton(holder)).toBeDisabled();
+  // The explanation beside it lists both corrections, and they come to the amount on the button.
+  const why = holder.getByTestId("due-reasons");
+  await expect(why.getByRole("listitem")).toHaveCount(2);
+  await expect(why.getByTestId("due-total")).toContainText("$28.00");
   await fillCard(holder, CARD_OK);
   await changed.getByRole("checkbox").check();
   await expect(payButton(holder)).toBeEnabled();
@@ -296,5 +300,32 @@ test("a broker's confirmation is refused when a payment landed after the preview
   await card.getByRole("button", { name: "Cancel the policy" }).click();
   await expect(broker.getByText("Cancelled", { exact: true }).first()).toBeVisible();
   await expect(balance(broker)).toHaveText("$0.00");
+});
+
+test("a renewal is refused if the policy changed after the renewal was shown", async ({ browser }) => {
+  const { broker } = await demoPolicy(browser);
+  const renew = broker.locator("#renew");
+  await expect(renew.getByTestId("renewal-premium")).toHaveText("$1,825.00");
+
+  // In another tab, Business Property is added to the policy. This tab still shows the old renewal.
+  const otherTab = await broker.context().newPage();
+  await otherTab.goto(broker.url());
+  const edit = otherTab.locator("#edit-coverage");
+  await edit.locator('input[name="effectiveDate"]').fill(new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date()));
+  await edit.locator('input[value="PROP"]').check();
+  await edit.getByRole("button", { name: "Preview change" }).click();
+  await edit.getByRole("button", { name: "Confirm coverage change" }).click();
+  await expect(otherTab.getByTestId("saved-notice")).toBeVisible();
+
+  // Renewing from the stale tab creates nothing, says why, and shows the renewal as it would be now.
+  await renew.getByRole("button", { name: "Renew policy" }).click();
+  await expect(renew.getByTestId("renew-error")).toContainText("has changed since the renewal was shown");
+  await expect(renew.getByTestId("renewal-premium")).toHaveText("$2,190.00");
+  await expect(broker).toHaveURL(otherTab.url());
+
+  // Renewing again, with the new terms on screen, goes through.
+  await renew.getByRole("button", { name: "Renew policy" }).click();
+  await expect(broker).not.toHaveURL(otherTab.url());
+  await expect(balance(broker)).toHaveText("$2,190.00");
 });
 

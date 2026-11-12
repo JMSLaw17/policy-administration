@@ -26,6 +26,8 @@ const fake = vi.hoisted(() => ({
    *  - "rejected": Stripe refuses, and makes nothing.
    */
   refundFault: null as null | "lost" | "rejected",
+  /** The state Stripe reports for a new refund. A bank refund starts as "pending". */
+  refundStatus: "succeeded",
 }));
 
 vi.mock("@/lib/integrations/stripe", async () => {
@@ -57,7 +59,7 @@ vi.mock("@/lib/integrations/stripe", async () => {
           if (fault === "rejected") {
             throw new Stripe.errors.StripeInvalidRequestError({ type: "invalid_request_error", message: "This payment can't be refunded." });
           }
-          const refund = { id: `re_${fake.refunds.length + 1}`, status: "succeeded", ...data };
+          const refund = { id: `re_${fake.refunds.length + 1}`, status: fake.refundStatus, ...data };
           fake.refunds.push(refund);
           fake.byKey.set(options.idempotencyKey, refund);
           if (fault === "lost") {
@@ -107,6 +109,7 @@ beforeEach(async () => {
   fake.refunds.length = 0;
   fake.byKey.clear();
   fake.refundFault = null;
+  fake.refundStatus = "succeeded";
 });
 
 const GL = 109_500; // General Liability for a full term
@@ -291,13 +294,31 @@ describe("starting a payment", () => {
     ]);
   });
 
-  it("returns the amount Stripe will collect, which is the amount due now", async () => {
+  it("never raises an amount already offered: when more is due it starts a new payment", async () => {
     const { policyId, cyberChangeId } = await policyWithCyber();
-    expect((await startPayment(policyId)).amountCents).toBe(GL + CYBER_FROM_OCT_25);
-    // More becomes due while the form is closed. Opening it again gives the new amount.
+    const first = await startPayment(policyId);
+    expect(first.amountCents).toBe(GL + CYBER_FROM_OCT_25);
+
+    // More becomes due. A form that is open in another tab still says the old amount,
+    // so that payment is closed, not raised, and can no longer be completed.
     await moveCyberTo(policyId, cyberChangeId, "2026-10-18");
     const reopened = await startPayment(policyId);
-    expect(reopened.amountCents).toBe(GL + CYBER_FROM_OCT_25 + WEEK_OF_CYBER);
+    expect(reopened).toEqual({ clientSecret: "pi_2_secret", amountCents: GL + CYBER_FROM_OCT_25 + WEEK_OF_CYBER });
+    expect(fake.intents.get("pi_1")).toMatchObject({ status: "canceled", amount: GL + CYBER_FROM_OCT_25 });
+    expect(
+      await db.payment.findMany({ where: { policyId }, orderBy: { createdAt: "asc" }, select: { status: true, amountCents: true } }),
+    ).toEqual([
+      { status: "FAILED", amountCents: GL + CYBER_FROM_OCT_25 },
+      { status: "INITIATED", amountCents: GL + CYBER_FROM_OCT_25 + WEEK_OF_CYBER },
+    ]);
+  });
+
+  it("lowers the open payment when less is due, and reports the amount it will collect", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    await startPayment(policyId);
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    const reopened = await startPayment(policyId);
+    expect(reopened).toEqual({ clientSecret: "pi_1_secret", amountCents: GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER });
     expect(fake.intents.get("pi_1")!.amount).toBe(reopened.amountCents);
   });
 });
@@ -378,3 +399,56 @@ describe("a refund that is interrupted", () => {
     expect(await balance(policyId)).toBe(0);
   });
 });
+
+describe("news about a payment arriving out of order", () => {
+  it("never sets a settled payment back to pending", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
+    const whileProcessing = { ...intent } as unknown as Stripe.PaymentIntent;
+    await stripeConfirms(intent);
+
+    // A "processing" notice from before it settled is handled late. So is a "cancelled" one.
+    await recordPaymentIntent(whileProcessing);
+    await recordPaymentIntent({ ...whileProcessing, status: "canceled" } as Stripe.PaymentIntent);
+    expect((await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).status).toBe("SUCCEEDED");
+    expect(await balance(policyId)).toBe(0);
+  });
+
+  it("repairs a paid payment that was left marked pending", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    // The state the old code could leave behind: paid on the statement, pending in the payments table.
+    await db.payment.update({ where: { id: paymentId }, data: { status: "PENDING" } });
+
+    // Opening the policy asks Stripe again and puts it right, without posting a second line.
+    await reconcilePending(policyId);
+    expect((await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).status).toBe("SUCCEEDED");
+    expect((await loadPolicyView(policyId))!.statement.filter((r) => r.kind === "PAYMENT")).toHaveLength(1);
+  });
+});
+
+describe("telling the broker about a refund", () => {
+  it("reports a refund Stripe is still working on as pending, not as refunded", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+
+    // A refund to a bank account takes days.
+    fake.refundStatus = "pending";
+    expect(await refundCredit(policyId)).toEqual({ refundedCents: 0, pendingCents: WEEK_OF_CYBER, message: undefined });
+    // The credit is still on the statement, and the refund shows as pending.
+    expect(await balance(policyId)).toBe(-WEEK_OF_CYBER);
+    expect(await db.refund.findMany({ where: { policyId }, select: { status: true } })).toEqual([{ status: "PENDING" }]);
+
+    // When Stripe finishes it, it reaches the statement.
+    fake.refunds[0].status = "succeeded";
+    await reconcilePending(policyId);
+    expect(await balance(policyId)).toBe(0);
+    // And nothing more is refunded.
+    expect(await refundCredit(policyId)).toMatchObject({ refundedCents: 0, pendingCents: 0 });
+    expect(fake.refunds).toHaveLength(1);
+  });
+});
+

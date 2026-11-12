@@ -18,6 +18,9 @@ import { stripe } from "@/lib/integrations/stripe";
 export class PaymentError extends Error {}
 
 const CANCELLED_NOTE = "The payment was cancelled.";
+const SUPERSEDED_NOTE = "Not submitted. Replaced by a new payment when the amount due went up.";
+/** Reasons that mean an attempt is closed for good, as opposed to declined and open for another try. */
+const CLOSED_NOTES = [CANCELLED_NOTE, SUPERSEDED_NOTE];
 
 export async function balanceCents(policyId: string): Promise<number> {
   const sum = await db.ledgerEntry.aggregate({ where: { policyId }, _sum: { amountCents: true } });
@@ -55,7 +58,26 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
       throw new PaymentError("A payment is already being processed. It can take a little while to clear.");
     }
     if (isUnfinished(intent) && !intent.last_payment_error) {
-      if (intent.amount !== due) {
+      if (intent.amount < due) {
+        // More is due than this attempt was opened for. Its amount may already
+        // be on a Pay button in another tab, and an amount a customer has been
+        // shown is never raised. So this attempt is closed and a new one made.
+        const cancelled = await stripe().paymentIntents.cancel(intent.id);
+        await db.payment.updateMany({
+          where: { id: payment.id, status: { not: "SUCCEEDED" } },
+          data: { status: "FAILED", failureReason: SUPERSEDED_NOTE },
+        });
+        await logIntegrationEvent({
+          provider: "stripe",
+          direction: "OUTBOUND",
+          eventType: "payment_intent.cancel",
+          externalId: intent.id,
+          policyId,
+          payload: { reason: "More is due now, so a new payment was started", status: cancelled.status },
+        });
+        continue;
+      }
+      if (intent.amount > due) {
         intent = await stripe().paymentIntents.update(intent.id, { amount: due });
         await db.payment.update({ where: { id: payment.id }, data: { amountCents: due } });
         await logIntegrationEvent({
@@ -142,7 +164,7 @@ async function createIntent(payment: { id: string; policyId: string; amountCents
  */
 async function cancelFailedAttempts(policyId: string) {
   const failed = await db.payment.findMany({
-    where: { policyId, status: "FAILED", stripePaymentIntentId: { not: null }, failureReason: { not: CANCELLED_NOTE } },
+    where: { policyId, status: "FAILED", stripePaymentIntentId: { not: null }, failureReason: { notIn: CLOSED_NOTES } },
   });
   for (const f of failed) {
     try {
@@ -168,12 +190,14 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
   if (intent.status === "succeeded") {
     await db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${payment.policyId} FOR UPDATE`;
-      const already = await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id } });
-      if (already) return;
+      // The status is set whether or not the statement line is already there,
+      // so a payment that some older news marked pending is put right.
       await tx.payment.update({
         where: { id: payment.id },
         data: { status: "SUCCEEDED", amountCents: intent.amount_received, failureReason: null },
       });
+      const already = await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id } });
+      if (already) return;
       await tx.ledgerEntry.create({
         data: {
           policyId: payment.policyId,
@@ -191,20 +215,33 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
     return;
   }
 
-  if (payment.status === "SUCCEEDED") return; // Never downgrade a completed payment.
+  // News can arrive out of order: a "processing" notice can be handled after
+  // the payment has succeeded. So every write below applies only to a payment
+  // that hasn't succeeded, checked in the write itself and not from the copy
+  // read above, which may be out of date by now. A completed payment is never
+  // downgraded.
+  const unlessSucceeded = { id: payment.id, status: { not: "SUCCEEDED" as const } };
+  const unlessSucceededOr = (status: "FAILED" | "PENDING") => ({
+    id: payment.id,
+    status: { notIn: ["SUCCEEDED" as const, status] },
+  });
 
   if (intent.status === "canceled") {
     // Keep the original decline reason if there was one.
-    if (payment.status !== "FAILED") {
-      await db.payment.update({ where: { id: payment.id }, data: { status: "FAILED", failureReason: CANCELLED_NOTE } });
-    }
+    await db.payment.updateMany({
+      where: unlessSucceededOr("FAILED"),
+      data: { status: "FAILED", failureReason: CANCELLED_NOTE },
+    });
   } else if (intent.status === "requires_payment_method" && intent.last_payment_error) {
-    await db.payment.update({
-      where: { id: payment.id },
+    await db.payment.updateMany({
+      where: unlessSucceeded,
       data: { status: "FAILED", failureReason: intent.last_payment_error.message ?? "The payment was declined." },
     });
-  } else if (intent.status === "processing" && payment.status !== "PENDING") {
-    await db.payment.update({ where: { id: payment.id }, data: { status: "PENDING", failureReason: null } });
+  } else if (intent.status === "processing") {
+    await db.payment.updateMany({
+      where: unlessSucceededOr("PENDING"),
+      data: { status: "PENDING", failureReason: null },
+    });
   }
 }
 
@@ -247,7 +284,7 @@ export async function syncOpenPayments(policyId: string) {
       policyId,
       stripePaymentIntentId: { not: null },
       // Not yet submitted, or declined but still open for another try.
-      OR: [{ status: "INITIATED" }, { status: "FAILED", failureReason: { not: CANCELLED_NOTE } }],
+      OR: [{ status: "INITIATED" }, { status: "FAILED", failureReason: { notIn: CLOSED_NOTES } }],
     },
   });
   if (open.length === 0) return;
@@ -340,13 +377,22 @@ export async function reconcilePending(policyId: string) {
 
 /**
  * If the customer has a credit (they've paid more than they owe), send it
- * back to their card. Runs after every change to a policy and after every
+ * back to the payment it came from. Runs after every change to a policy and after every
  * successful payment, and can be re-run by the broker if a refund failed.
  *
  * A credit is first absorbed by anything else owed, simply because the
  * balance is one running total. Only a negative balance is refunded.
  */
-export async function refundCredit(policyId: string, transactionId?: string): Promise<{ refundedCents: number; message?: string }> {
+export async function refundCredit(
+  policyId: string,
+  transactionId?: string,
+): Promise<{
+  /** Refunds Stripe has completed. These are on the statement. */
+  refundedCents: number;
+  /** Refunds Stripe has accepted but not finished (a bank refund takes days). Not on the statement yet. */
+  pendingCents: number;
+  message?: string;
+}> {
   // Decide what to refund under a lock, so two runs can't both refund the same credit.
   const planned = await db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${policyId} FOR UPDATE`;
@@ -395,7 +441,7 @@ export async function refundCredit(policyId: string, transactionId?: string): Pr
   if (planned.shortfallCents > 0) {
     message = `${formatUSD(planned.shortfallCents)} of the credit couldn't be refunded to a card payment.`;
   }
-  return { refundedCents: sent.refundedCents, message };
+  return { refundedCents: sent.refundedCents, pendingCents: sent.pendingCents, message };
 }
 
 /**
@@ -425,6 +471,7 @@ async function sendUnsentRefunds(policyId: string, fresh = new Set<string>()) {
     orderBy: { createdAt: "asc" },
   });
   let refundedCents = 0;
+  let pendingCents = 0;
   let message: string | undefined;
   for (const row of rows) {
     const paymentIntent = row.payment.stripePaymentIntentId!;
@@ -456,7 +503,9 @@ async function sendUnsentRefunds(policyId: string, fresh = new Set<string>()) {
         });
       }
       await recordRefund(refund);
-      if (refund.status === "succeeded" || refund.status === "pending") refundedCents += row.amountCents;
+      // Only a refund Stripe has completed counts as refunded. One it is still working on is pending.
+      if (refund.status === "succeeded") refundedCents += row.amountCents;
+      else if (refund.status === "pending" || refund.status === "requires_action") pendingCents += row.amountCents;
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Stripe rejected the refund.";
       if (isRejection(error)) {
@@ -479,7 +528,7 @@ async function sendUnsentRefunds(policyId: string, fresh = new Set<string>()) {
       });
     }
   }
-  return { refundedCents, message };
+  return { refundedCents, pendingCents, message };
 }
 
 /**

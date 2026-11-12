@@ -33,7 +33,14 @@ export async function fillCard(page: Page, card: string) {
   // Stripe's form lives in a frame served by Stripe, which is why it needs a frame locator.
   // Stripe adds hidden helper frames with the same title, so pick the one on screen.
   const stripe = page.locator('iframe[title="Secure payment input frame"]:visible').first().contentFrame();
-  await stripe.getByRole("button", { name: /^Card/ }).click();
+  // Open the Card section. The form can redraw while the page around it refreshes, which
+  // loses a click, so keep trying until the card fields are showing.
+  await expect(async () => {
+    if (!(await stripe.getByLabel("Card number").isVisible())) {
+      await stripe.getByRole("button", { name: /^Card/ }).click();
+    }
+    await expect(stripe.getByLabel("Card number")).toBeVisible({ timeout: 2_000 });
+  }).toPass();
   // Found by their labels, which are steadier than Stripe's internal ids.
   await stripe.getByLabel("Card number").fill(card);
   await stripe.getByLabel("Expiration date").fill("12 / 34");
