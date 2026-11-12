@@ -25,7 +25,7 @@ Creating a customer as the broker also creates a policyholder login with that cu
 
 > A customer has paid for their policy and an additional coverage change. Three weeks later, the broker discovers that the extra coverage began a week earlier than recorded. Correct the effective date and show the revised amount due, keeping the original charge and the correction visible.
 
-1. Sign in as the broker and click **Load demo scenario** on the Customers page. It creates a new customer whose policy was issued and paid six weeks ago, with Cyber Liability added and paid three weeks ago, but recorded as starting a week later than it really did. It takes a few seconds, because it makes two real Stripe test payments. You land on the policy with a $0.00 balance.
+1. Sign in as the broker and click **Load demo scenario** at the bottom of the Customers page. It creates a new customer whose policy was issued and paid six weeks ago, with Cyber Liability added and paid three weeks ago, but recorded as starting a week later than it really did. It takes a few seconds, because it makes two real Stripe test payments. You land on the policy with a $0.00 balance.
 2. In **Policy history**, click **Correct this** on entry #2 (the Cyber change). Move the effective date a week earlier and click **Preview correction**.
 3. The preview shows exactly what will be posted: a reversal of the original charge, the new charge with its formula, and the new amount due of **$14.00**. Confirm it.
 4. The statement now shows the original charge struck through and marked "Superseded by correction #3", the reversal, and the corrected charge. The history entry explains it in plain English: *"Cyber Liability now counts 7 more days … at $2.00 a day … In total, $14.00 more is owed."*

@@ -24,7 +24,6 @@ export default async function BrokerHome() {
           New customer
         </Link>
       </div>
-      <DemoScenarioCard />
       <ul className="mt-6 divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white shadow-sm">
         {customers.map((c) => (
           <li key={c.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 text-sm">
@@ -52,6 +51,7 @@ export default async function BrokerHome() {
           </li>
         ))}
       </ul>
+      <DemoScenarioCard />
     </div>
   );
 }

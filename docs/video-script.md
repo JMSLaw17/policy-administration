@@ -35,7 +35,7 @@ A script for the submission video: up to five minutes, showing the transaction i
 
 ## 3. The scenario: correcting the effective date (1:25 to 3:10)
 
-**Show:** back in the broker window, go to Customers and click **Load demo scenario**. Wait for the policy page.
+**Show:** back in the broker window, go to Customers and click **Load demo scenario** at the bottom of the page. Wait for the policy page.
 
 **Say:** "This is the scenario from the brief. This button builds the starting point in one click: a policy issued and paid six weeks ago, with Cyber added and paid three weeks ago. Both payments are real Stripe test payments. The yellow note says what was shortcut: no signature, and the history is backdated."
 
