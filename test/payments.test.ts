@@ -36,6 +36,8 @@ const fake = vi.hoisted(() => ({
   refundFault: null as null | "lost" | "rejected",
   /** The state Stripe reports for a new refund. A bank refund starts as "pending". */
   refundStatus: "succeeded",
+  /** Disputes as Stripe holds them, by id. */
+  disputes: new Map<string, unknown>(),
 }));
 
 vi.mock("@/lib/integrations/stripe", async () => {
@@ -80,6 +82,9 @@ vi.mock("@/lib/integrations/stripe", async () => {
         }),
         retrieve: async (id: string) => fake.refunds.find((r) => r.id === id)!,
       },
+      disputes: { retrieve: async (id: string) => fake.disputes.get(id)! },
+      // The stand-in trusts the signature. The real check is Stripe's own code.
+      webhooks: { constructEventAsync: async (body: string) => JSON.parse(body) },
     }),
   };
 });
@@ -118,6 +123,7 @@ beforeEach(async () => {
   fake.byKey.clear();
   fake.refundFault = null;
   fake.refundStatus = "succeeded";
+  fake.disputes.clear();
 });
 
 const GL = 109_500; // General Liability for a full term
@@ -664,6 +670,41 @@ describe("a payment the customer's bank takes back after it cleared", () => {
     await recordDispute(dispute(intent.id, paid - 1_000, "lost", "dp_first"));
     await recordDispute(dispute(intent.id, 5_000, "lost", "dp_second"));
     expect(await balance(policyId)).toBe(paid);
+  });
+
+  it("is recorded when Stripe's webhook reports the dispute, which carries no policy of its own", async () => {
+    const { POST } = await import("@/app/api/stripe/webhook/route");
+    process.env.STRIPE_WEBHOOK_SECRET = "whsec_test";
+    const { policyId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    const paid = GL + CYBER_FROM_OCT_25;
+
+    // A dispute event has no metadata of ours. The policy is found through the payment it is about.
+    const send = (type: string, object: Record<string, unknown>) =>
+      POST(
+        new Request("http://localhost/api/stripe/webhook", {
+          method: "POST",
+          headers: { "stripe-signature": "t=1,v1=test" },
+          body: JSON.stringify({ id: `evt_${type}`, type, created: 1, data: { object } }),
+        }),
+      ).then((response) => response.json());
+    const lost = dispute(intent.id, paid);
+    fake.disputes.set(lost.id, lost);
+
+    expect(await send("charge.dispute.closed", { id: lost.id, payment_intent: intent.id })).toEqual({ received: true });
+    expect(await send("charge.dispute.closed", { id: lost.id, payment_intent: intent.id })).toEqual({ received: true });
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.balanceCents).toBe(paid);
+    expect(view.statement.filter((r) => r.returnsLine !== null)).toHaveLength(1);
+    // It is in the integration log, against the policy.
+    expect(await db.integrationEvent.count({ where: { policyId, eventType: "charge.dispute.closed", direction: "INBOUND" } })).toBe(2);
+
+    // A dispute on a payment this copy of the app doesn't know is ignored and not logged.
+    expect(await send("charge.dispute.closed", { id: "dp_other", payment_intent: "pi_someone_elses" })).toMatchObject({
+      ignored: "not one of this app's policies",
+    });
+    expect(await db.integrationEvent.count({ where: { eventType: "charge.dispute.closed" } })).toBe(2);
   });
 
   it("can't be refunded against", async () => {

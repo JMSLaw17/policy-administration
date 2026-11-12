@@ -1,5 +1,6 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
-import { balance, CARD_OK, payByCard, signIn } from "../e2e/helpers";
+import { expect, test, type Page } from "@playwright/test";
+import { balance, CARD_OK, payByCard } from "../e2e/helpers";
+import { freshPaidPolicy } from "./helpers";
 
 /**
  * A cancellation with its refund, and a renewal, on a deployed copy of the
@@ -10,23 +11,6 @@ import { balance, CARD_OK, payByCard, signIn } from "../e2e/helpers";
  */
 
 const todayInNewYork = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
-
-/** Loads a demo scenario as the broker and returns the policy's pages for both roles. */
-async function freshPaidPolicy(browser: Browser) {
-  const broker = await signIn(browser, "broker@demo.test");
-  await broker.getByRole("button", { name: "Load demo scenario" }).click();
-  await expect(broker).toHaveURL(/\/broker\/policies\//, { timeout: 90_000 });
-  await expect(balance(broker)).toHaveText("$0.00");
-  const policyUrl = broker.url().split("#")[0];
-  const policyNumber = await broker.getByRole("heading", { level: 1 }).innerText();
-
-  // The demo customer's login is shown on their customer page.
-  await broker.getByRole("link", { name: /^← / }).click();
-  const login = (await broker.getByText(/Policyholder login:/).innerText()).match(/[\w.-]+@[\w.-]+\.test/)![0];
-  await broker.goto(policyUrl);
-  const holder = await signIn(browser, login);
-  return { broker, holder, policyUrl, policyNumber, policyId: policyUrl.split("/broker/policies/")[1] };
-}
 
 const refundRows = (page: Page) => page.locator("#payments").getByRole("row").filter({ hasText: "Refund of" });
 

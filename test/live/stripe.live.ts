@@ -7,6 +7,7 @@ import {
   balanceCents,
   PaymentError,
   reconcilePending,
+  recordDispute,
   recordPaymentIntent,
   recordRefund,
   refundCredit,
@@ -31,6 +32,8 @@ import { loadPolicyView } from "@/lib/policies/view";
 const VISA = "pm_card_visa";
 const DECLINED = "pm_card_chargeDeclined";
 const BANK = "pm_usBankAccount_success";
+/** Stripe's test card whose payments succeed and are then disputed by the cardholder. */
+const DISPUTED = "pm_card_createDispute";
 /** Stripe's test card whose refunds are accepted and then fail a moment later. */
 const REFUND_FAILS = "pm_card_refundFail";
 
@@ -200,6 +203,48 @@ describe("Stripe test mode, end to end", () => {
       "Refund failed and was not paid out: The card it was going back to has expired or been cancelled.",
     );
   }, 240_000);
+
+  it("makes the amount due again when a payment is disputed and the dispute is lost", async () => {
+    const policy = await issuePolicy({ customerId, startDate: "2026-10-01", coverageCodes: ["GL"], userId: brokerId });
+    const { intentId } = await payWith(policy.id, DISPUTED);
+    expect((await view(policy.id)).balanceCents).toBe(0);
+
+    // Stripe opens a dispute on the payment. While it is open the money may still come back,
+    // so nothing changes on the statement.
+    const waitFor = async <T>(read: () => Promise<T | undefined>) => {
+      for (let i = 0; i < 30; i++) {
+        const found = await read();
+        if (found) return found;
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+      }
+      throw new Error("Stripe didn't get there in a minute");
+    };
+    const opened = await waitFor(async () => (await stripe().disputes.list({ payment_intent: intentId })).data[0]);
+    expect(opened.status).not.toBe("lost");
+    await recordDispute(opened);
+    expect((await view(policy.id)).balanceCents).toBe(0);
+
+    // The dispute is lost (in test mode, by submitting Stripe's "losing" evidence). That is how a
+    // returned bank debit arrives too. The app is told the way the webhook tells it, twice.
+    await stripe().disputes.update(opened.id, { evidence: { uncategorized_text: "losing_evidence" } });
+    const lost = await waitFor(async () => {
+      const dispute = await stripe().disputes.retrieve(opened.id);
+      return dispute.status === "lost" ? dispute : undefined;
+    });
+    await recordDispute(lost);
+    await recordDispute(lost);
+
+    // The payment's line is still there, a new line puts the $1,095.00 back, and it is due again.
+    const v = await view(policy.id);
+    expect(v.balanceCents).toBe(109_500);
+    expect(v.statement.slice(-2).map((r) => [r.kind, r.amountCents])).toEqual([
+      ["PAYMENT", -109_500],
+      ["PAYMENT", 109_500],
+    ]);
+    expect(v.statement.at(-1)!.description).toBe(`Payment returned by the bank (${lost.reason.replaceAll("_", " ")})`);
+    expect(v.payments).toMatchObject([{ status: "FAILED", failureReason: "Returned by the bank after it had cleared.", returnedCents: 109_500 }]);
+    console.log(`Dispute ${opened.id.slice(0, 12)} on ${intentId.slice(0, 12)}: ${opened.status} then ${lost.status}`);
+  }, 150_000);
 
   it("refunds a correction's credit, then a cancellation's, back to the cards", async () => {
     // The reviewers' scenario with real payments: policy paid, Cyber added and paid.

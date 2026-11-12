@@ -139,10 +139,10 @@ Each of these is recorded with its reasoning in [DECISIONS.md](DECISIONS.md).
 | Command | What it covers |
 |---|---|
 | `npm run check` | Typecheck, lint, and `npm test`: the money rules, the whole workflow against a local test database (including the scenario above), and the payment rules with a stand-in for Stripe. |
-| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, two checkouts at once, a refund resumed after an interruption, a refund that Stripe accepts and then fails (this one waits about two minutes for Stripe), and the demo scenario. |
+| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, two checkouts at once, a refund resumed after an interruption, a refund that Stripe accepts and then fails (this one waits about two minutes for Stripe), a payment that is disputed and lost, and the demo scenario. |
 | `npm run test:e2e` | A real browser (Playwright) running the scenario end to end, typing test cards into Stripe's own card form. Also covers the amount changing while the pay form is open, and a payment landing between a broker's preview and confirmation. |
 | `npm run smoke` | Signs in to the deployed site as each role and opens the main pages. Read-only. |
-| `npm run test:deployed` | Refunds and claims in a browser against the deployed site. Changes data. |
+| `npm run test:deployed` | Refunds, claims, cancellation, renewal, and a payment taken back by the bank, in a browser against the deployed site. Changes data. |
 | `npm run prod:query` | A read-only summary of the deployed database, for confirming results. |
 
 DocuSign signing is checked by hand, because it happens on DocuSign's own page.
