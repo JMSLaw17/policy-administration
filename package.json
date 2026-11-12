@@ -12,6 +12,8 @@
     "test": "vitest run",
     "test:stripe": "vitest run --config vitest.live.config.mts",
     "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm run lint && npm test",
+    "smoke": "playwright test --config playwright.smoke.config.ts",
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
