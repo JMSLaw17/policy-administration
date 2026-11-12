@@ -1,11 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
-import { balance, CARD_OK, payByCard, signIn } from "../e2e/helpers";
+import { balance, CARD_DECLINED, CARD_OK, payByCard, signIn } from "../e2e/helpers";
 
 /**
  * Refunds and claims on a deployed copy of the app, on an existing active
  * policy (the deployed app needs a DocuSign signature to issue a new one).
  *
- * Refund: make sure the policy is paid, add Cyber if it isn't on the policy
+ * Refund: make sure the policy is paid (trying a declined card first if
+ * anything is due), add Cyber if it isn't on the policy
  * yet, pay for it, then correct Cyber's start date to a week later. The
  * customer has then paid for 7 days they don't get, and the app must refund
  * that to the card through Stripe on its own.
@@ -17,7 +18,7 @@ import { balance, CARD_OK, payByCard, signIn } from "../e2e/helpers";
  * and files two more claims.
  */
 
-const POLICY = process.env.POLICY ?? "SBP-2026-0001";
+const POLICY = process.env.POLICY ?? "SBP-2026-0002";
 
 const todayInNewYork = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
 const addDays = (date: string, days: number) =>
@@ -26,16 +27,24 @@ const addDays = (date: string, days: number) =>
 const section = (page: Page, heading: string) =>
   page.locator("section").filter({ has: page.getByRole("heading", { name: heading, exact: true }) });
 
-async function payIfDue(holder: Page) {
+async function payIfDue(holder: Page, { declineFirst = false } = {}) {
   await holder.reload();
-  if ((await balance(holder).innerText()) === "$0.00") return;
+  const due = await balance(holder).innerText();
+  if (due === "$0.00") return;
+  if (declineFirst) {
+    // A declined card first: it must be shown as failed and leave the amount due unchanged.
+    await payByCard(holder, CARD_DECLINED);
+    await expect(holder.getByTestId("payment-error")).toContainText(/declined/i);
+    await holder.reload();
+    await expect(balance(holder)).toHaveText(due);
+    await expect(holder.locator("#payments").getByRole("row").filter({ hasText: "Failed" }).first()).toBeVisible();
+  }
   await payByCard(holder, CARD_OK);
   await expect(balance(holder)).toHaveText("$0.00");
 }
 
 test(`refunds and claims on ${POLICY}`, async ({ browser }) => {
   const broker = await signIn(browser, "broker@demo.test");
-  const holder = await signIn(browser, "owner@acme-bakery.test");
 
   // Find the policy from the broker's home page.
   await broker.goto("/broker");
@@ -43,11 +52,16 @@ test(`refunds and claims on ${POLICY}`, async ({ browser }) => {
   expect(href, `policy ${POLICY} on the broker's home page`).toBeTruthy();
   const policyId = href!.split("/broker/policies/")[1];
   await broker.goto(href!);
+  // Sign in as whoever holds this policy. Their login is shown on the customer's page.
+  await broker.getByRole("link", { name: /^← / }).click();
+  const login = (await broker.getByText(/Policyholder login:/).innerText()).match(/[\w.-]+@[\w.-]+\.test/)![0];
+  await broker.goto(href!);
+  const holder = await signIn(browser, login);
   await holder.goto(`/portal/policies/${policyId}`);
   await expect(broker.getByText("Active", { exact: true }).first()).toBeVisible();
 
-  await test.step("the policy is paid up", async () => {
-    await payIfDue(holder);
+  await test.step("the policy is paid up, after a declined card if anything is due", async () => {
+    await payIfDue(holder, { declineFirst: true });
   });
 
   await test.step("Cyber is on the policy and paid for", async () => {
