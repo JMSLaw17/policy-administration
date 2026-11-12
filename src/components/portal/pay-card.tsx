@@ -146,7 +146,8 @@ function PaymentForm({
 
   return (
     <form onSubmit={submit} className="max-w-md">
-      <PaymentElement />
+      {/* Link is Stripe's saved-details wallet. Off, so the form offers only card and bank account. */}
+      <PaymentElement options={{ wallets: { link: "never" } }} />
       {error && (
         <p role="alert" className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="payment-error">
           {error}
