@@ -1,6 +1,6 @@
 # DocuSign evidence (developer sandbox)
 
-Collected 2026-11-12 11:51:06 UTC from DocuSign's API on its sandbox host, demo.docusign.net. Documents signed there are watermarked and not legally binding.
+Collected 2026-11-12 14:26:36 UTC from DocuSign's API on its sandbox host, demo.docusign.net. Documents signed there are watermarked and not legally binding.
 
 ## Envelopes
 

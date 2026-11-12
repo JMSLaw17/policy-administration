@@ -13,9 +13,11 @@ Evidence that the two sandbox integrations are live: Stripe in test mode and Doc
 
 The same references appear in all three places, which is the point. For example, the refund after a correction on the deployed app:
 
-- **The app's database** has a refund of $14.00 on policy SBP-2026-0001, marked succeeded, with a Stripe reference starting `re_3Uaw3Q`.
+- **The app's database** has a refund of $14.00 on policy SBP-2026-0002, marked succeeded, with a Stripe reference starting `re_3UaxL0`.
 - **The app's integration log** has a `refund.create` request sent, followed by `refund.created` and `refund.updated` webhooks received, for that reference.
 - **Stripe** has that refund as succeeded for $14.00, against the payment that paid for the coverage, with no webhook deliveries outstanding.
+
+A cancellation lines up the same way. Policy SBP-2026-0003 was cancelled with $1,615.00 to return, more than its newest payment covered, so the app split it newest payment first: $674.00 (`re_3UawoZ`) and $941.00 (`re_3UawoX`). Both appear in the app's database, in its integration log, and in Stripe as succeeded. The declined card on SBP-2026-0002 is there too: a failed payment of $1,095.00 in the app's database, and a `payment_intent.payment_failed` event in Stripe for the same amount seconds before the successful one.
 
 And for the signed application: the app's database has envelope `ea5b23f4` signed at 09:37:29 UTC on 2026-11-12 and policy SBP-2026-0002 issued from it; DocuSign's audit trail has the same envelope signed in-session at the same second; and DocuSign's delivery log shows `envelope-completed` sent to the app, which replied `{"received":true}`.
 
