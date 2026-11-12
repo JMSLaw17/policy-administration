@@ -29,7 +29,7 @@ Creating a customer as the broker also creates a policyholder login with that cu
 2. In **Policy history**, click **Correct this** on entry #2 (the Cyber change). Move the effective date a week earlier and click **Preview correction**.
 3. The preview shows exactly what will be posted: a reversal of the original charge, the new charge with its formula, and the new amount due of **$14.00**. Confirm it.
 4. The statement now shows the original charge struck through and marked "Superseded by correction #3", the reversal, and the corrected charge. The history entry explains it in plain English: *"Cyber Liability now counts 7 more days … at $2.00 a day … In total, $14.00 more is owed."*
-5. Sign in as the policyholder shown on the customer's page. They see the same statement and explanation, and a **Pay $14.00** button.
+5. Sign in as the policyholder shown on the customer's page. They see the same statement and explanation, and a **Pay $14.00** button with a "Why this is due" note beside it that repeats the correction in plain English.
 
 **Change the date to anything else** and the same thing happens. A later date gives the customer a credit, which the app refunds to their card through Stripe without anyone clicking anything. The same action can be corrected again and again; each correction starts from the current state.
 
@@ -58,7 +58,7 @@ To do it the long way instead of using the button: create a customer, send an ap
 | Collect the premium through a sandbox and show pending, successful, or failed | Policyholder → **Pay now** (Stripe test mode, card or US bank account). The **Payments and refunds** table shows each attempt's status and Stripe reference. |
 | Add coverage partway through the term, priced from its effective date | Broker → **Edit coverage** on the policy. Pick a date, tick or untick coverages, preview, confirm. |
 | Cancel and refund under a documented rule | Broker → **Cancel policy**. Pro-rata: the customer keeps paying only for days up to the cancellation date, and the rest is refunded through Stripe. |
-| Policy history and financial statement for both roles, every amount traceable | The policy page, same for both roles. Each statement line opens to show its formula, the history entry that caused it, and the payment or refund record behind it. |
+| Policy history and financial statement for both roles, every amount traceable | The policy page, same for both roles. A summary row above the statement adds it up (premium charged − payments + refunds = amount due). Each statement line opens to show its formula, the history entry that caused it, and the payment or refund record behind it. |
 
 Also built: correcting any past action (including the original issue), editing customer details with a history trail, and the three extensions the brief names.
 

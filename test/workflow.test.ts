@@ -110,6 +110,54 @@ describe("the scenario reviewers will test", () => {
       "Cyber Liability now counts 7 more days (341 instead of 334) at $2.00 a day, so its charge changes from $668.00 to $682.00. In total, $14.00 more is owed.",
     );
     expect(view.history.find((h) => h.seq === 2)!.supersededBySeq).toBe(3);
+
+    // The policyholder is told why $14.00 is due, beside the Pay button: the correction alone,
+    // since everything before it has been paid.
+    expect(view.dueBecause).toMatchObject([
+      {
+        seq: 3,
+        title: "Correction to #2",
+        netCents: 1_400,
+        reason: "Coverage began a week earlier than recorded",
+        text:
+          "Effective date corrected from Nov 1, 2026 to Oct 25, 2026. " +
+          "Cyber Liability now counts 7 more days (341 instead of 334) at $2.00 a day, so its charge changes from $668.00 to $682.00. In total, $14.00 more is owed.",
+      },
+    ]);
+    // And the statement adds up: premium − payments + refunds = amount due.
+    expect(view.totals).toEqual({ premiumCents: 177_700, paidCents: 176_300, refundedCents: 0 });
+    expect(view.totals.premiumCents - view.totals.paidCents + view.totals.refundedCents).toBe(view.balanceCents);
+
+    // Once it is paid, there is nothing to explain.
+    await payInFull(policy.id);
+    expect((await loadPolicyView(policy.id))!.dueBecause).toEqual([]);
+  });
+
+  it("explains an unpaid amount by every change it comes from, oldest first", async () => {
+    const policy = await issue();
+    expect((await loadPolicyView(policy.id))!.dueBecause).toMatchObject([
+      { seq: 1, title: "Policy issued", netCents: 109_500, text: "General Liability for Oct 1, 2026 to Oct 1, 2027." },
+    ]);
+    await payInFull(policy.id);
+
+    // Cyber is added and then corrected to start a week later, before the customer pays for either.
+    const change = await addCyber(policy.id, "2026-10-25");
+    await applyChange(
+      policy.id,
+      {
+        kind: "CORRECTION",
+        transactionId: change.transaction.id,
+        event: { type: "COVERAGE_CHANGE", effectiveDate: "2026-11-01", add: ["CYBER"], remove: [] },
+      },
+      brokerId,
+    );
+    const view = (await loadPolicyView(policy.id))!;
+    expect(view.balanceCents).toBe(66_800);
+    // Both changes are listed, and together they come to what is due. The paid-for issue isn't.
+    expect(view.dueBecause.map((r) => [r.seq, r.title, r.netCents])).toEqual([
+      [2, "Coverage changed", 68_200],
+      [3, "Correction to #2", -1_400],
+    ]);
   });
 
   it("handles the date being changed again, and to a later date", async () => {

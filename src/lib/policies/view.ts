@@ -62,6 +62,27 @@ export type HistoryEntry = {
   correctable: PolicyEvent | null;
 };
 
+/** A change whose premium is part of what is owed now. */
+export type DueReason = {
+  /** The history entry, so the note can link to it. */
+  seq: number;
+  title: string;
+  /** What was changed and, for a correction, why the amount moved. */
+  text: string;
+  /** The reason the broker gave, if any. */
+  reason: string | null;
+  recordedAt: string;
+  netCents: number;
+};
+
+/** The statement added up: premium − payments + refunds = balance. */
+export type StatementTotals = {
+  /** Charges less reversals and credits. */
+  premiumCents: number;
+  paidCents: number;
+  refundedCents: number;
+};
+
 /** Days with no cover between this policy and the one before or after it. */
 export type CoverageGap = {
   /** Where the other policy sits: the one this renews (BEFORE) or its renewal (AFTER). */
@@ -176,6 +197,13 @@ export async function loadPolicyView(policyId: string) {
   });
 
   const balanceCents = running;
+  const sumOf = (...kinds: StatementRow["kind"][]) =>
+    statement.filter((r) => kinds.includes(r.kind)).reduce((sum, r) => sum + r.amountCents, 0);
+  const totals: StatementTotals = {
+    premiumCents: sumOf("CHARGE", "CREDIT", "REVERSAL"),
+    paidCents: -sumOf("PAYMENT"),
+    refundedCents: sumOf("REFUND"),
+  };
 
   // Gaps between this policy and the one it renews, or its renewal. A policy
   // cancelled from its first day covers nothing, so there's nothing to be apart from.
@@ -245,6 +273,8 @@ export async function loadPolicyView(policyId: string) {
     statement,
     history,
     balanceCents,
+    totals,
+    dueBecause: reasonsForBalance(history, balanceCents),
     payments: policy.payments.map((p) => ({
       id: p.id,
       amountCents: p.amountCents,
@@ -265,6 +295,31 @@ export async function loadPolicyView(policyId: string) {
       statementLine: statement.find((s) => s.refundId === r.id)?.line ?? null,
     })),
   };
+}
+
+/**
+ * Which changes the amount due comes from. Payments settle the oldest premium
+ * first, so whatever is still owed belongs to the newest changes: walk back
+ * from the newest until they account for the balance. Usually that is one
+ * entry, the change made since the customer last paid.
+ */
+function reasonsForBalance(history: HistoryEntry[], balanceCents: number): DueReason[] {
+  const reasons: DueReason[] = [];
+  let unexplained = balanceCents;
+  for (const entry of [...history].reverse()) {
+    if (unexplained <= 0) break;
+    if (entry.netCents === 0) continue;
+    reasons.unshift({
+      seq: entry.seq,
+      title: entry.title,
+      text: [entry.summary, entry.explanation].filter(Boolean).join(" "),
+      reason: entry.reason,
+      recordedAt: entry.createdAt,
+      netCents: entry.netCents,
+    });
+    unexplained -= entry.netCents;
+  }
+  return reasons;
 }
 
 const list = (codes: string[]) => codes.map(coverageName).join(", ");

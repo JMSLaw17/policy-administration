@@ -144,6 +144,11 @@ describe("a payment that clears for more than is now due", () => {
       ["PAYMENT", -(GL + CYBER_FROM_OCT_25)],
       ["REFUND", WEEK_OF_CYBER],
     ]);
+    expect((await loadPolicyView(policyId))!.totals).toEqual({
+      premiumCents: GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER,
+      paidCents: GL + CYBER_FROM_OCT_25,
+      refundedCents: WEEK_OF_CYBER,
+    });
     expect(await balance(policyId)).toBe(0);
 
     // Hearing about the same payment again changes nothing.
@@ -198,6 +203,10 @@ describe("a payment form left open while the broker changes the policy", () => {
 
     await stripeConfirms(intent);
     expect(await balance(policyId)).toBe(WEEK_OF_CYBER);
+    // The week still owed is explained by the correction, though the payment came after it.
+    expect((await loadPolicyView(policyId))!.dueBecause.map((r) => [r.title, r.netCents])).toEqual([
+      ["Correction to #2", WEEK_OF_CYBER],
+    ]);
   });
 
   it("is cancelled when nothing is due any more", async () => {

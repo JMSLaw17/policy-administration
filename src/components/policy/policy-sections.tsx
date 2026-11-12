@@ -200,6 +200,7 @@ export function StatementCard({ view }: { view: View }) {
       title="Statement"
       description="Every charge, payment, and refund, oldest first. Open a line to see how it was calculated and where it came from."
     >
+      <StatementSummary view={view} />
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
@@ -259,6 +260,39 @@ export function StatementCard({ view }: { view: View }) {
         </tfoot>
       </table>
     </Card>
+  );
+}
+
+/** The statement added up in one row: premium − payments + refunds = what is owed. */
+function StatementSummary({ view }: { view: View }) {
+  const { premiumCents, paidCents, refundedCents } = view.totals;
+  const figures = [
+    { id: "premium", sign: "", label: "Premium charged", note: "after corrections and credits", cents: premiumCents },
+    { id: "payments", sign: "−", label: "Payments", note: "received", cents: paidCents },
+    { id: "refunds", sign: "+", label: "Refunds", note: "sent back", cents: refundedCents },
+    {
+      id: "balance",
+      sign: "=",
+      label: view.balanceCents < 0 ? "Credit on account" : "Amount due",
+      note: "",
+      cents: Math.abs(view.balanceCents),
+    },
+  ];
+  return (
+    <dl className="grid grid-cols-2 border-b border-slate-200 sm:grid-cols-4" data-testid="statement-summary">
+      {figures.map((f) => (
+        <div key={f.id} className={`px-5 py-3 ${f.id === "balance" ? "bg-slate-50" : ""}`}>
+          <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">
+            {f.sign && <span className="mr-1.5 text-slate-400">{f.sign}</span>}
+            {f.label}
+          </dt>
+          <dd className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900" data-testid={`summary-${f.id}`}>
+            {formatUSD(f.cents)}
+          </dd>
+          {f.note && <dd className="text-xs text-slate-500">{f.note}</dd>}
+        </div>
+      ))}
+    </dl>
   );
 }
 

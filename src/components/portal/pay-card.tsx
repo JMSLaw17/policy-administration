@@ -6,7 +6,16 @@ import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-
 import { loadStripe } from "@stripe/stripe-js";
 import { refreshPaymentsAction, startPaymentAction } from "@/app/portal/actions";
 import { ButtonLabel, Card, primaryButton, secondaryButton } from "@/components/ui";
-import { formatDate, formatUSD } from "@/lib/engine";
+import { formatDate, formatUSD, signedUSD } from "@/lib/engine";
+import type { DueReason } from "@/lib/policies/view";
+
+const shortDate = (iso: string) =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(iso));
 
 const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 const stripePromise = publishableKey ? loadStripe(publishableKey) : null;
@@ -16,12 +25,15 @@ export function PayCard({
   amountDueCents,
   dueDate,
   hasPendingPayment,
+  reasons,
 }: {
   policyId: string;
   amountDueCents: number;
   /** Set when the term hasn't started yet, so the premium isn't due until then. */
   dueDate?: string | null;
   hasPendingPayment: boolean;
+  /** The changes this amount comes from, oldest first, so the customer isn't asked to pay without being told why. */
+  reasons: DueReason[];
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -68,6 +80,25 @@ export function PayCard({
       }
     >
       <div className="px-5 py-4">
+        {reasons.length > 0 && (
+          <div className="mb-4 rounded-md bg-indigo-50 px-3 py-2.5 text-sm text-slate-800" data-testid="due-reasons">
+            <p className="font-medium">Why this is due</p>
+            <ul className="mt-1.5 space-y-2">
+              {reasons.map((reason) => (
+                <li key={reason.seq} className="flex items-start justify-between gap-6">
+                  <span>
+                    <a className="font-medium text-indigo-700 underline" href={`#history-${reason.seq}`}>
+                      {reason.title}
+                    </a>
+                    , {shortDate(reason.recordedAt)}. {reason.text}
+                    {reason.reason && <span className="block text-slate-600">Reason: {reason.reason}</span>}
+                  </span>
+                  <span className="font-medium tabular-nums whitespace-nowrap">{signedUSD(reason.netCents)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {!clientSecret && (
           <>
             {waiting || processing ? (

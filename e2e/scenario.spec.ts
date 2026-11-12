@@ -88,6 +88,21 @@ test("pay, add coverage, pay, correct the date, decline, pay, correct again with
         "What this means: Cyber Liability now counts 7 more days (341 instead of 334) at $2.00 a day, so its charge changes from $668.00 to $682.00. In total, $14.00 more is owed.",
       );
     }
+    // The policyholder is told why $14.00 is due, right beside the Pay button.
+    const why = holder.locator("#pay").getByTestId("due-reasons");
+    await expect(why).toContainText("Correction to #2");
+    await expect(why).toContainText("Effective date corrected from Nov 1, 2026 to Oct 25, 2026.");
+    await expect(why).toContainText("In total, $14.00 more is owed.");
+    await expect(why).toContainText("Reason: Coverage began a week earlier than recorded");
+    await expect(why).toContainText("+$14.00");
+    // The statement adds up in one row: premium − payments + refunds = amount due.
+    for (const page of [broker, holder]) {
+      const summary = page.getByTestId("statement-summary");
+      await expect(summary.getByTestId("summary-premium")).toHaveText("$1,777.00");
+      await expect(summary.getByTestId("summary-payments")).toHaveText("$1,763.00");
+      await expect(summary.getByTestId("summary-refunds")).toHaveText("$0.00");
+      await expect(summary.getByTestId("summary-balance")).toHaveText("$14.00");
+    }
     // The policyholder can read the correction but can't make one.
     await expect(holder.getByRole("button", { name: "Correct this" })).toHaveCount(0);
   });
@@ -125,6 +140,12 @@ test("pay, add coverage, pay, correct the date, decline, pay, correct again with
     await holder.reload();
     await expect(balance(holder)).toHaveText("$0.00");
     await expect(holder.locator("#statement")).toContainText("Refund sent to your original payment method");
+    // 327 days of Cyber at $2.00, all of it paid, with the $28.00 difference sent back.
+    const summary = holder.getByTestId("statement-summary");
+    await expect(summary.getByTestId("summary-premium")).toHaveText("$1,749.00");
+    await expect(summary.getByTestId("summary-payments")).toHaveText("$1,777.00");
+    await expect(summary.getByTestId("summary-refunds")).toHaveText("$28.00");
+    await expect(summary.getByTestId("summary-balance")).toHaveText("$0.00");
   });
 });
 
