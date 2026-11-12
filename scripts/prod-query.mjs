@@ -27,7 +27,9 @@ function connectionString() {
     .find((l) => l.trim().startsWith("PROD_DATABASE_URL="));
   const value = line?.slice(line.indexOf("=") + 1).trim().replace(/^["']|["']$/g, "");
   if (!value) fail(`${ENV_FILE} has no PROD_DATABASE_URL value.`);
-  return value;
+  // Ask for full certificate checking by name. This is what "require" already
+  // means to this driver, and saying so avoids its deprecation warning.
+  return value.replace(/sslmode=(require|prefer|verify-ca)\b/, "sslmode=verify-full");
 }
 
 function fail(message) {
