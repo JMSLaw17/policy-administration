@@ -1,6 +1,6 @@
 # Plan: Policy Administration Demo (Track 1)
 
-**Status:** draft for review, 2026-11-11. Nothing is built yet.
+**Status:** this is the original plan from 2026-11-11, kept as written. The app has since grown past it (DocuSign replaced email, and claims, renewals, and commissions were added). For what was built, see [README.md](README.md); for why, see [DECISIONS.md](DECISIONS.md).
 
 ## 1. What we're building, in one paragraph
 

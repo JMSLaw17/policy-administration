@@ -5,6 +5,7 @@
  *
  *   npm run prod:query                       summary of recent activity
  *   npm run prod:query -- "select ..."       one SELECT statement
+ *   node scripts/prod-query.mjs --json "select ..."   the same, as JSON
  *
  * The connection string is read from .env.production.local (PROD_DATABASE_URL),
  * which git ignores. It is never printed.
@@ -70,7 +71,10 @@ const SUMMARY = [
     from "IntegrationEvent" order by "createdAt" desc limit 20`],
 ];
 
-const sql = process.argv.slice(2).join(" ").trim();
+// `--json` prints the rows as JSON instead of a table, for other scripts to read.
+const args = process.argv.slice(2);
+const asJson = args[0] === "--json";
+const sql = args.slice(asJson ? 1 : 0).join(" ").trim();
 const client = new pg.Client({ connectionString: connectionString() });
 
 try {
@@ -89,8 +93,11 @@ try {
 
   if (sql) {
     const result = await run(sql);
-    console.table(result.rows);
-    console.log(`${result.rowCount} row(s)`);
+    if (asJson) console.log(JSON.stringify(result.rows));
+    else {
+      console.table(result.rows);
+      console.log(`${result.rowCount} row(s)`);
+    }
   } else {
     for (const [title, text] of SUMMARY) {
       console.log(`\n${title}`);

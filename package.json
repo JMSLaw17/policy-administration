@@ -19,7 +19,9 @@
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
     "db:seed": "prisma db seed",
-    "prod:query": "node scripts/prod-query.mjs"
+    "prod:query": "node scripts/prod-query.mjs",
+    "evidence": "node scripts/evidence.mjs",
+    "evidence:screenshots": "playwright test --config playwright.evidence.config.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.1",
