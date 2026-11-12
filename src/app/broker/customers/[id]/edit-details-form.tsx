@@ -2,7 +2,7 @@
 
 import { useActionState } from "react";
 import { updateCustomerAction, type DetailsState } from "@/app/broker/actions";
-import { inputClass, primaryButton } from "@/components/ui";
+import { ButtonLabel, inputClass, primaryButton } from "@/components/ui";
 import type { CustomerDetails } from "@/lib/policies/details";
 
 const fields: { name: keyof CustomerDetails; label: string; wide?: boolean; maxLength?: number }[] = [
@@ -45,7 +45,7 @@ export function EditDetailsForm({ customerId, details }: { customerId: string; d
       {state?.saved && <p className="text-sm text-green-700 sm:col-span-2">{state.saved}</p>}
       <div className="sm:col-span-2">
         <button type="submit" disabled={pending} className={primaryButton}>
-          {pending ? "Saving…" : "Save details"}
+          <ButtonLabel pending={pending}>Save details</ButtonLabel>
         </button>
       </div>
     </form>

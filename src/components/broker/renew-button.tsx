@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { renewPolicyAction } from "@/app/broker/actions";
-import { primaryButton } from "@/components/ui";
+import { ButtonLabel, primaryButton } from "@/components/ui";
 
 export function RenewButton({ policyId }: { policyId: string }) {
   const [pending, startTransition] = useTransition();
@@ -15,7 +15,7 @@ export function RenewButton({ policyId }: { policyId: string }) {
         className={primaryButton}
         onClick={() => startTransition(async () => setError((await renewPolicyAction(policyId))?.error ?? null))}
       >
-        {pending ? "Renewing…" : "Renew policy"}
+        <ButtonLabel pending={pending}>Renew policy</ButtonLabel>
       </button>
       {error && <p className="mt-2 text-sm text-red-700">{error}</p>}
     </div>

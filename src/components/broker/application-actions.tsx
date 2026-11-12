@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { issueFromApplicationAction, withdrawApplicationAction } from "@/app/broker/actions";
-import { primaryButton, secondaryButton } from "@/components/ui";
+import { ButtonLabel, primaryButton, secondaryButton } from "@/components/ui";
 
 export function ApplicationActions({
   applicationId,
@@ -27,7 +27,7 @@ export function ApplicationActions({
           className={primaryButton}
           onClick={() => run(() => issueFromApplicationAction(applicationId))}
         >
-          {pending ? "Issuing…" : "Issue policy"}
+          <ButtonLabel pending={pending}>Issue policy</ButtonLabel>
         </button>
       ) : (
         <button
@@ -36,7 +36,7 @@ export function ApplicationActions({
           className={secondaryButton}
           onClick={() => run(() => withdrawApplicationAction(applicationId, customerId))}
         >
-          {pending ? "Withdrawing…" : "Withdraw"}
+          <ButtonLabel pending={pending}>Withdraw</ButtonLabel>
         </button>
       )}
       {error && <p className="mt-1 max-w-xs text-xs text-red-700">{error}</p>}

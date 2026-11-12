@@ -3,11 +3,11 @@ import Link from "next/link";
 export const inputClass =
   "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500";
 export const primaryButton =
-  "inline-flex items-center justify-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60";
+  "relative inline-flex items-center justify-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60";
 export const secondaryButton =
-  "inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60";
+  "relative inline-flex items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60";
 export const dangerButton =
-  "inline-flex items-center justify-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60";
+  "relative inline-flex items-center justify-center rounded-md bg-red-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60";
 
 export function Card({
   title,
@@ -59,5 +59,27 @@ export function BackLink({ href, children }: { href: string; children: React.Rea
     <Link href={href} className="text-sm text-slate-500 hover:text-slate-900">
       ← {children}
     </Link>
+  );
+}
+
+/**
+ * The text of a button that can be busy. While it's working, the label keeps
+ * its place but is hidden, and a spinner sits over it, so the button stays
+ * exactly the same size and nothing around it moves. Use inside a button
+ * styled with one of the classes above, and disable the button while pending.
+ */
+export function ButtonLabel({ pending, children }: { pending: boolean; children: React.ReactNode }) {
+  return (
+    <>
+      <span className={pending ? "invisible" : undefined}>{children}</span>
+      {pending && (
+        <span className="absolute inset-0 flex items-center justify-center" role="status" aria-label="Working">
+          <svg className="size-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+            <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+          </svg>
+        </span>
+      )}
+    </>
   );
 }

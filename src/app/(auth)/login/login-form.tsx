@@ -2,6 +2,7 @@
 
 import { useActionState } from "react";
 import { login, type LoginState } from "./actions";
+import { ButtonLabel } from "@/components/ui";
 
 export function LoginForm() {
   const [state, action, pending] = useActionState<LoginState, FormData>(login, undefined);
@@ -36,9 +37,9 @@ export function LoginForm() {
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-60"
+        className="relative w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-60"
       >
-        {pending ? "Signing in…" : "Sign in"}
+        <ButtonLabel pending={pending}>Sign in</ButtonLabel>
       </button>
     </form>
   );

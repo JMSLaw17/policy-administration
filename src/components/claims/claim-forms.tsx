@@ -2,7 +2,7 @@
 
 import { useState, useTransition, type FormEvent } from "react";
 import { decideClaimAction, fileClaimAction, payClaimAction, type ClaimFormState } from "@/app/claim-actions";
-import { dangerButton, inputClass, primaryButton, secondaryButton } from "@/components/ui";
+import { ButtonLabel, dangerButton, inputClass, primaryButton, secondaryButton } from "@/components/ui";
 import { COVERAGES, formatUSD } from "@/lib/engine";
 
 export function FileClaimForm({
@@ -72,7 +72,7 @@ export function FileClaimForm({
       )}
       <div className="flex gap-2 sm:col-span-3">
         <button type="submit" disabled={pending} className={primaryButton}>
-          {pending ? "Filing…" : "File claim"}
+          <ButtonLabel pending={pending}>File claim</ButtonLabel>
         </button>
         <button type="button" onClick={() => setOpen(false)} className={secondaryButton}>
           Close
@@ -149,7 +149,7 @@ export function PayClaimButton({ claimId, payoutCents }: { claimId: string; payo
         className={primaryButton}
         onClick={() => startTransition(async () => setError((await payClaimAction(claimId))?.error ?? null))}
       >
-        {pending ? "Recording…" : `Record payment of ${formatUSD(payoutCents)}`}
+        <ButtonLabel pending={pending}>{`Record payment of ${formatUSD(payoutCents)}`}</ButtonLabel>
       </button>
       {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
     </div>

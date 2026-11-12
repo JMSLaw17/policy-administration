@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
 import { loadStripe } from "@stripe/stripe-js";
 import { refreshPaymentsAction, startPaymentAction } from "@/app/portal/actions";
-import { Card, primaryButton, secondaryButton } from "@/components/ui";
+import { ButtonLabel, Card, primaryButton, secondaryButton } from "@/components/ui";
 import { formatDate, formatUSD } from "@/lib/engine";
 
 const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
@@ -76,7 +76,7 @@ export function PayCard({
               </p>
             ) : (
               <button type="button" onClick={begin} disabled={pending || !stripePromise} className={primaryButton}>
-                {pending ? "Starting…" : `Pay ${formatUSD(amountDueCents)} now`}
+                <ButtonLabel pending={pending}>{`Pay ${formatUSD(amountDueCents)} now`}</ButtonLabel>
               </button>
             )}
             {!stripePromise && (
@@ -154,7 +154,7 @@ function PaymentForm({
       )}
       <div className="mt-4 flex gap-2">
         <button type="submit" disabled={!stripe || submitting} className={primaryButton}>
-          {submitting ? "Paying…" : `Pay ${formatUSD(amountCents)}`}
+          <ButtonLabel pending={submitting}>{`Pay ${formatUSD(amountCents)}`}</ButtonLabel>
         </button>
         <button type="button" onClick={onCancel} disabled={submitting} className={secondaryButton}>
           Cancel

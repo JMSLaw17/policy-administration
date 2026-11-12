@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { retryRefundAction } from "@/app/broker/actions";
-import { secondaryButton } from "@/components/ui";
+import { ButtonLabel, secondaryButton } from "@/components/ui";
 
 export function RetryRefundButton({ policyId }: { policyId: string }) {
   const router = useRouter();
@@ -23,7 +23,7 @@ export function RetryRefundButton({ policyId }: { policyId: string }) {
           })
         }
       >
-        {pending ? "Refunding…" : "Refund credit"}
+        <ButtonLabel pending={pending}>Refund credit</ButtonLabel>
       </button>
       {notice && <p className="mt-1 max-w-xs text-xs text-slate-600">{notice}</p>}
     </div>

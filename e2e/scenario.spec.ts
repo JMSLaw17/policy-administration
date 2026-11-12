@@ -171,3 +171,23 @@ test("pay, add coverage, pay, correct the date, decline, pay, correct again with
     await expect(holder.locator("#statement")).toContainText("Refund sent to your original payment method");
   });
 });
+
+test("a button keeps its size and shows a spinner while it works", async ({ page }) => {
+  await page.goto("/login");
+  await page.locator('input[name="email"]').fill("broker@demo.test");
+  await page.locator('input[name="password"]').fill(DEMO_PASSWORD);
+
+  // Hold the sign-in request back so the busy state can be measured.
+  await page.route("**/login", async (route) => {
+    if (route.request().method() === "POST") await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+
+  const button = page.locator('button[type="submit"]');
+  const before = await button.boundingBox();
+  await button.click();
+  await expect(button.getByRole("status", { name: "Working" })).toBeVisible();
+  await expect(button).toBeDisabled(); // so it can't be clicked twice
+  expect(await button.boundingBox()).toEqual(before);
+  await expect(page).toHaveURL(/\/broker/);
+});

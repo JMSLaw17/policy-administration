@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { applyChangeAction, previewChangeAction } from "@/app/broker/actions";
-import { dangerButton, inputClass, primaryButton, secondaryButton } from "@/components/ui";
+import { ButtonLabel, dangerButton, inputClass, primaryButton, secondaryButton } from "@/components/ui";
 import { formatDate, formatUSD, formulaFor, periodFor, signedUSD } from "@/lib/engine";
 import type {
   ChangePreview,
@@ -160,7 +160,7 @@ export function PreviewPanel({
           onClick={onConfirm}
           className={danger ? dangerButton : primaryButton}
         >
-          {pending ? "Saving…" : confirmLabel}
+          <ButtonLabel pending={pending}>{confirmLabel}</ButtonLabel>
         </button>
         <button type="button" disabled={pending} onClick={onBack} className={secondaryButton}>
           Back

@@ -40,6 +40,12 @@ To look at the running app yourself: `npm run dev`, then sign in at http://local
 - `npm run prod:query` prints a read-only summary of the deployed database (policies and balances, applications, payments, refunds, recent integration events). `npm run prod:query -- "select ..."` runs one SELECT. Needs `PROD_DATABASE_URL` in the git-ignored `.env.production.local`. It cannot change data; never try to write to production.
 - The broker's Integration log page (`/broker/integrations`) shows recent Stripe and DocuSign webhook events as the app received them.
 
+## Interface conventions
+
+- A button never changes size or wording when clicked. Wrap its text in `<ButtonLabel pending={...}>` from `src/components/ui.tsx` and disable it while pending: the label keeps its space and a spinner shows in its place.
+- Everything clickable shows a pointer cursor (a global rule in `src/app/globals.css`), and disabled controls show "not allowed".
+- Every money-affecting broker action shows a preview of its effect on the statement before it is confirmed.
+
 ## Things that have bitten us
 
 - Run `npm run build` before pushing. A type error that only shows in the build has broken a Vercel deployment before.

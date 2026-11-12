@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { FormError, PreviewPanel, SavedNotice, useChangeFlow } from "./change-flow";
-import { Card, inputClass, primaryButton, secondaryButton } from "@/components/ui";
+import { ButtonLabel, Card, inputClass, primaryButton, secondaryButton } from "@/components/ui";
 import {
   COVERAGES,
   formatDate,
@@ -113,7 +113,7 @@ export function EditCoverageCard({
             onClick={() => flow.runPreview({ kind: "COVERAGE_CHANGE", effectiveDate: date, add, remove, reason })}
             className={`${primaryButton} mt-4`}
           >
-            {flow.pending ? "Calculating…" : "Preview change"}
+            <ButtonLabel pending={flow.pending}>Preview change</ButtonLabel>
           </button>
         )}
         <FormError error={flow.error} />
@@ -183,7 +183,7 @@ export function CancelCard({
             onClick={() => flow.runPreview({ kind: "CANCELLATION", effectiveDate: date, reason })}
             className={`${secondaryButton} mt-4`}
           >
-            {flow.pending ? "Calculating…" : "Preview cancellation"}
+            <ButtonLabel pending={flow.pending}>Preview cancellation</ButtonLabel>
           </button>
         )}
         <FormError error={flow.error} />
@@ -349,7 +349,7 @@ export function CorrectControl({
             onClick={() => flow.runPreview({ kind: "CORRECTION", transactionId, event: corrected(), reason })}
             className={primaryButton}
           >
-            {flow.pending ? "Calculating…" : "Preview correction"}
+            <ButtonLabel pending={flow.pending}>Preview correction</ButtonLabel>
           </button>
           <button type="button" onClick={close} className={secondaryButton}>
             Close

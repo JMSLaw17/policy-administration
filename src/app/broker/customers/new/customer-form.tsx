@@ -2,7 +2,7 @@
 
 import { useActionState } from "react";
 import { createCustomer, type FormState } from "@/app/broker/actions";
-import { inputClass, primaryButton } from "@/components/ui";
+import { ButtonLabel, inputClass, primaryButton } from "@/components/ui";
 
 const fields = [
   { name: "businessName", label: "Business name", span: 2 },
@@ -37,7 +37,7 @@ export function CustomerForm() {
       )}
       <div className="sm:col-span-2">
         <button type="submit" disabled={pending} className={primaryButton}>
-          {pending ? "Creating…" : "Create customer"}
+          <ButtonLabel pending={pending}>Create customer</ButtonLabel>
         </button>
       </div>
     </form>

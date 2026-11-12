@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { issuePolicyAction, type FormState } from "@/app/broker/actions";
-import { inputClass, primaryButton } from "@/components/ui";
+import { ButtonLabel, inputClass, primaryButton } from "@/components/ui";
 import { addOneYear, COVERAGES, formatDate, formatUSD, isISODate } from "@/lib/engine";
 
 export function IssuePolicyForm({
@@ -87,13 +87,9 @@ export function IssuePolicyForm({
       )}
       {state?.saved && <p className="mt-3 text-sm text-green-700">{state.saved}</p>}
       <button type="submit" disabled={pending} className={`${primaryButton} mt-4`}>
-        {requiresSignature
-          ? pending
-            ? "Sending…"
-            : "Send application for signature"
-          : pending
-            ? "Issuing…"
-            : "Issue policy"}
+        <ButtonLabel pending={pending}>
+          {requiresSignature ? "Send application for signature" : "Issue policy"}
+        </ButtonLabel>
       </button>
     </form>
   );
