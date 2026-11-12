@@ -49,6 +49,14 @@ export function RenewalCard({ policyId, preview }: { policyId: string; preview: 
 
 /* ----------------------------- Commission ----------------------------- */
 
+const postedDate = (iso: string) =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(iso));
+
 export function CommissionCard({ commission }: { commission: PolicyCommission }) {
   return (
     <Card
@@ -67,6 +75,7 @@ export function CommissionTable({ commission }: { commission: PolicyCommission }
       <thead>
         <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
           <th className="px-5 py-2 font-medium">Statement line</th>
+          <th className="px-5 py-2 font-medium">Posted</th>
           <th className="px-5 py-2 font-medium">Premium line</th>
           <th className="px-5 py-2 text-right font-medium">Premium</th>
           <th className="px-5 py-2 text-right font-medium">Commission at {formatRate(commission.rateBps)}</th>
@@ -83,6 +92,7 @@ export function CommissionTable({ commission }: { commission: PolicyCommission }
                 Line {l.statementLine}
               </Link>
             </td>
+            <td className="px-5 py-2 whitespace-nowrap text-slate-600">{postedDate(l.postedAt)}</td>
             <td className="px-5 py-2 text-slate-700">{l.description}</td>
             <td className="px-5 py-2 text-right tabular-nums text-slate-700">{signedUSD(l.premiumCents)}</td>
             <td className="px-5 py-2 text-right tabular-nums font-medium text-slate-900">
@@ -93,7 +103,7 @@ export function CommissionTable({ commission }: { commission: PolicyCommission }
       </tbody>
       <tfoot>
         <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
-          <td colSpan={2} className="px-5 py-2.5 text-right text-slate-700">
+          <td colSpan={3} className="px-5 py-2.5 text-right text-slate-700">
             Total
           </td>
           <td className="px-5 py-2.5 text-right tabular-nums text-slate-900">{formatUSD(commission.premiumCents)}</td>

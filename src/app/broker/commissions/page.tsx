@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Card } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
-import { formatRate, formatUSD } from "@/lib/engine";
+import { formatDate, formatRate, formatUSD } from "@/lib/engine";
 import { commissionForAllPolicies } from "@/lib/policies/commissions";
 
 export const metadata = { title: "Commissions" };
@@ -31,6 +31,7 @@ export default async function CommissionsPage() {
               <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
                 <th className="px-5 py-2 font-medium">Policy</th>
                 <th className="px-5 py-2 font-medium">Customer</th>
+                <th className="px-5 py-2 font-medium">Term</th>
                 <th className="px-5 py-2 text-right font-medium">Rate</th>
                 <th className="px-5 py-2 text-right font-medium">Net premium</th>
                 <th className="px-5 py-2 text-right font-medium">Commission</th>
@@ -45,6 +46,14 @@ export default async function CommissionsPage() {
                     </Link>
                   </td>
                   <td className="px-5 py-2.5 text-slate-700">{p.businessName}</td>
+                  <td className="px-5 py-2.5 text-slate-600">
+                    <span className="whitespace-nowrap">
+                      {formatDate(p.startDate)} to {formatDate(p.endDate)}
+                    </span>
+                    {p.cancelledEffective && (
+                      <span className="block text-xs text-slate-500">Cancelled from {formatDate(p.cancelledEffective)}</span>
+                    )}
+                  </td>
                   <td className="px-5 py-2.5 text-right tabular-nums text-slate-600">{formatRate(p.rateBps)}</td>
                   <td className="px-5 py-2.5 text-right tabular-nums text-slate-700">{formatUSD(p.premiumCents)}</td>
                   <td className="px-5 py-2.5 text-right tabular-nums font-medium text-slate-900">
@@ -55,7 +64,7 @@ export default async function CommissionsPage() {
             </tbody>
             <tfoot>
               <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
-                <td colSpan={3} className="px-5 py-3 text-right text-slate-700">
+                <td colSpan={4} className="px-5 py-3 text-right text-slate-700">
                   Total
                 </td>
                 <td className="px-5 py-3 text-right tabular-nums text-slate-900">{formatUSD(totalPremium)}</td>

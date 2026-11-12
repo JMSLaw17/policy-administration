@@ -1,6 +1,6 @@
 import "server-only";
 import { db } from "@/lib/db";
-import { commissionFor } from "@/lib/engine";
+import { commissionFor, fromJSDate, type ISODate } from "@/lib/engine";
 
 /**
  * Broker commission.
@@ -24,6 +24,8 @@ export type CommissionLine = {
   entryId: string;
   /** Line number on the policy's statement. */
   statementLine: number;
+  /** When the line was posted to the statement. A clawback is dated when the premium was returned. */
+  postedAt: string;
   description: string;
   kind: "CHARGE" | "CREDIT" | "REVERSAL";
   premiumCents: number;
@@ -34,6 +36,10 @@ export type PolicyCommission = {
   policyId: string;
   policyNumber: string;
   businessName: string;
+  /** The term the commission belongs to. */
+  startDate: ISODate;
+  endDate: ISODate;
+  cancelledEffective: ISODate | null;
   rateBps: number;
   premiumCents: number;
   commissionCents: number;
@@ -45,9 +51,12 @@ const PREMIUM_KINDS = new Set(["CHARGE", "CREDIT", "REVERSAL"]);
 type PolicyWithLedger = {
   id: string;
   policyNumber: string;
+  startDate: Date;
+  endDate: Date;
+  cancelledEffective: Date | null;
   commissionRateBps: number;
   customer: { businessName: string };
-  ledger: { id: string; kind: string; amountCents: number; description: string }[];
+  ledger: { id: string; kind: string; amountCents: number; description: string; postedAt: Date }[];
 };
 
 function commissionOf(policy: PolicyWithLedger): PolicyCommission {
@@ -57,6 +66,7 @@ function commissionOf(policy: PolicyWithLedger): PolicyCommission {
     lines.push({
       entryId: entry.id,
       statementLine: index + 1,
+      postedAt: entry.postedAt.toISOString(),
       description: entry.description,
       kind: entry.kind as CommissionLine["kind"],
       premiumCents: entry.amountCents,
@@ -67,6 +77,9 @@ function commissionOf(policy: PolicyWithLedger): PolicyCommission {
     policyId: policy.id,
     policyNumber: policy.policyNumber,
     businessName: policy.customer.businessName,
+    startDate: fromJSDate(policy.startDate),
+    endDate: fromJSDate(policy.endDate),
+    cancelledEffective: policy.cancelledEffective ? fromJSDate(policy.cancelledEffective) : null,
     rateBps: policy.commissionRateBps,
     premiumCents: lines.reduce((s, l) => s + l.premiumCents, 0),
     commissionCents: lines.reduce((s, l) => s + l.commissionCents, 0),

@@ -236,11 +236,16 @@ describe("broker commission", () => {
     ]);
     expect(commission.premiumCents).toBe(177_700);
     expect(commission.commissionCents).toBe(17_770);
+    // Each line carries the date it was posted, and the policy carries the term it belongs to.
+    const statement = (await loadPolicyView(policy.id))!.statement;
+    for (const line of commission.lines) expect(line.postedAt).toBe(statement[line.statementLine - 1].postedAt);
+    expect(commission).toMatchObject({ startDate: "2026-10-01", endDate: "2027-10-01", cancelledEffective: null });
 
     await applyChange(policy.id, { kind: "CANCELLATION", effectiveDate: "2027-04-01" }, brokerId);
     const after = (await commissionForPolicy(policy.id))!;
     expect(after.premiumCents).toBe(177_700 - 91_500);
     expect(after.commissionCents).toBe(17_770 - 9_150);
+    expect(after.cancelledEffective).toBe("2027-04-01");
   });
 });
 

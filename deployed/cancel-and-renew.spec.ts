@@ -32,6 +32,10 @@ const refundRows = (page: Page) => page.locator("#payments").getByRole("row").fi
 
 const dollars = (text: string) => Number(text.replace(/[$,+]/g, ""));
 
+/** A date as the app writes it, such as "Nov 12, 2026", in US Eastern time. */
+const shortDate = (date: Date) =>
+  new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }).format(date);
+
 /**
  * Checks the broker's commission for one policy, on the Commissions page and
  * on the policy's own commission table: 10% of its net premium, with the
@@ -40,22 +44,29 @@ const dollars = (text: string) => Number(text.replace(/[$,+]/g, ""));
 async function expectCommission(broker: Page, policyUrl: string, policyNumber: string) {
   await broker.goto("/broker/commissions");
   const cells = await broker.getByRole("row").filter({ hasText: policyNumber }).getByRole("cell").allInnerTexts();
-  // Columns: policy, customer, rate, net premium, commission.
-  expect(cells[2]).toBe("10%");
-  const netPremium = dollars(cells[3]);
-  const commission = dollars(cells[4]);
+  // Columns: policy, customer, term, rate, net premium, commission.
+  expect(cells[2]).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{4} to [A-Z][a-z]{2} \d{1,2}, \d{4}/);
+  expect(cells[3]).toBe("10%");
+  const netPremium = dollars(cells[4]);
+  const commission = dollars(cells[5]);
   expect(commission).toBeCloseTo(netPremium * 0.1, 2);
 
   await broker.goto(policyUrl);
   const table = broker.locator("#commission");
-  await expect(table.getByTestId("commission-total")).toHaveText(cells[4]);
+  await expect(table.getByTestId("commission-total")).toHaveText(cells[5]);
+  // Columns: statement line, posted, premium line, premium, commission.
   const lines = await table.locator("tbody tr").evaluateAll((rows) =>
-    rows.map((r) => [...r.querySelectorAll("td")].slice(2).map((td) => td.textContent ?? "")),
+    rows.map((r) => [...r.querySelectorAll("td")].map((td) => td.textContent ?? "")),
   );
   const sum = (column: number) => lines.reduce((total, line) => total + dollars(line[column]), 0);
-  expect(sum(0)).toBeCloseTo(netPremium, 2);
-  expect(sum(1)).toBeCloseTo(commission, 2);
-  return { netPremium, commission, lines: lines.map((l) => dollars(l[1])) };
+  expect(sum(3)).toBeCloseTo(netPremium, 2);
+  expect(sum(4)).toBeCloseTo(commission, 2);
+  return {
+    term: cells[2],
+    netPremium,
+    commission,
+    lines: lines.map((l) => ({ posted: l[1], commission: dollars(l[4]) })),
+  };
 }
 
 test("cancelling a paid policy credits the unused days and refunds them to the cards", async ({ browser }) => {
@@ -89,7 +100,11 @@ test("cancelling a paid policy credits the unused days and refunds them to the c
 
   // Commission is clawed back on the premium that was credited: one negative line per credit.
   const earned = await expectCommission(broker, broker.url().split("#")[0], policyNumber);
-  expect(earned.lines.filter((c) => c < 0)).toHaveLength(2);
+  const clawbacks = earned.lines.filter((l) => l.commission < 0);
+  expect(clawbacks).toHaveLength(2);
+  // Each clawback is dated today, when the premium was returned, and the term shows the cancellation.
+  for (const line of clawbacks) expect(line.posted).toBe(shortDate(new Date()));
+  expect(earned.term).toContain("Cancelled from");
   expect(earned.commission).toBeGreaterThan(0); // the days that were covered still earn commission
   console.log(`Commission on ${policyNumber} after cancelling: ${earned.commission.toFixed(2)} on ${earned.netPremium.toFixed(2)} of premium`);
 

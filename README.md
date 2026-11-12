@@ -66,7 +66,7 @@ Also built: correcting any past action (including the original issue), editing c
 |---|---|
 | **Claims** | Either role files a claim. It is accepted only if that coverage was in force on the date of loss, so correcting a start date can bring a loss into cover. The broker approves (payout = approved loss − $500 deductible, capped at the coverage limit) or denies with a reason. |
 | **Renewals** | **Renew policy** creates a linked policy for the next 12 months with the coverages in force at expiry, at today's prices. A policy and its renewal can never overlap. |
-| **Broker commissions** | 10% of premium, calculated line by line from the statement, with a clawback when premium is credited back. |
+| **Broker commissions** | 10% of premium, calculated line by line from the statement, with a clawback when premium is credited back. Each line shows the date it was posted, and each policy its term. |
 
 ## How the money works
 
