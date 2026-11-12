@@ -256,6 +256,9 @@ describe("renewals", () => {
     expect(view).toMatchObject({ startDate: "2027-10-01", endDate: "2028-10-01", termDays: 366, balanceCents: 182_500 });
     expect(view.coverage.map((c) => c.code).sort()).toEqual(["CYBER", "GL"]);
     expect(view.renewedFrom?.policyNumber).toBe(policy.policyNumber);
+    // The renewal term hasn't started, so its premium is due on its start date, not now.
+    expect(view.dueDate).toBe("2027-10-01");
+    expect((await loadPolicyView(policy.id))!.dueDate).toBeNull();
     expect((await loadPolicyView(policy.id))!.renewal?.policyNumber).toBe(renewal.policyNumber);
 
     // The expiring policy's own statement is untouched.

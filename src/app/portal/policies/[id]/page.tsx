@@ -32,7 +32,7 @@ export default async function PortalPolicyPage(props: PageProps<"/portal/policie
     <div className="space-y-6">
       <BackLink href="/portal">My policies</BackLink>
       <PolicySummary view={view} policyBasePath="/portal/policies" />
-      <PayCard policyId={view.id} amountDueCents={view.balanceCents} hasPendingPayment={hasPendingPayment} />
+      <PayCard policyId={view.id} amountDueCents={view.balanceCents} hasPendingPayment={hasPendingPayment} dueDate={view.dueDate} />
       <CoverageCard view={view} />
       <StatementCard view={view} />
       <PaymentsCard view={view} />

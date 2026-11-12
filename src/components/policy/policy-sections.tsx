@@ -93,6 +93,11 @@ export function PolicySummary({
             {formatUSD(Math.abs(due))}
           </p>
           {due === 0 && <p className="text-xs text-slate-500">Paid in full</p>}
+          {due > 0 && view.dueDate && (
+            <p className="text-xs text-slate-500" data-testid="due-date">
+              Due by {formatDate(view.dueDate)}, when the term starts
+            </p>
+          )}
         </div>
         {actions}
       </div>
@@ -209,7 +214,11 @@ export function StatementCard({ view }: { view: View }) {
         <tfoot>
           <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
             <td colSpan={4} className="px-5 py-3 text-right text-slate-700">
-              {view.balanceCents >= 0 ? "Amount due" : "Credit on account"}
+              {view.balanceCents < 0
+                ? "Credit on account"
+                : view.balanceCents > 0 && view.dueDate
+                  ? `Amount due by ${formatDate(view.dueDate)}`
+                  : "Amount due"}
             </td>
             <td className="px-5 py-3 text-right tabular-nums text-slate-900">
               {formatUSD(Math.abs(view.balanceCents))}

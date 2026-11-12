@@ -49,3 +49,7 @@ The brief names claims, renewals, and broker commissions as extensions once the 
 - **Payout = approved loss − $500 deductible, capped at the coverage's per-claim limit.** The deductible and limit are saved on the claim when it's approved. **Assumptions:** one flat deductible, fixed per-claim limits with no annual aggregate, and no partial payments or reserves.
 - **Claim payments are simulated.** Marking a claim paid records the payment in the app. No money moves, because paying a customer would need a payout integration that the brief doesn't ask for.
 - **Integration tests run against a separate local test database.** They exercise the real service code, including the reviewers' scenario, without Stripe or DocuSign. The test setup refuses to run against any database that isn't local.
+
+## 2026-11-12
+
+- **Premium is due on the term's start date.** A policy whose term hasn't started shows "due by" its start date in place of a bare "amount due", and can be paid early. This matters for renewals, which the broker can create well ahead of the new term. **Simplifications:** a real system would only offer renewal 60 to 90 days before expiry, send a renewal notice, and cancel an unpaid renewal back to its start date after a grace period. We let the broker renew at any time so the flow is easy to try, and leave out notices, grace periods, and lapse for non-payment.

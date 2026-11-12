@@ -6,7 +6,7 @@ import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-
 import { loadStripe } from "@stripe/stripe-js";
 import { refreshPaymentsAction, startPaymentAction } from "@/app/portal/actions";
 import { Card, primaryButton, secondaryButton } from "@/components/ui";
-import { formatUSD } from "@/lib/engine";
+import { formatDate, formatUSD } from "@/lib/engine";
 
 const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
 const stripePromise = publishableKey ? loadStripe(publishableKey) : null;
@@ -14,10 +14,13 @@ const stripePromise = publishableKey ? loadStripe(publishableKey) : null;
 export function PayCard({
   policyId,
   amountDueCents,
+  dueDate,
   hasPendingPayment,
 }: {
   policyId: string;
   amountDueCents: number;
+  /** Set when the term hasn't started yet, so the premium isn't due until then. */
+  dueDate?: string | null;
   hasPendingPayment: boolean;
 }) {
   const router = useRouter();
@@ -58,7 +61,11 @@ export function PayCard({
     <Card
       id="pay"
       title={`Pay ${formatUSD(amountDueCents)}`}
-      description="Payments run through Stripe in test mode. No real money moves."
+      description={
+        dueDate
+          ? `Not due until ${formatDate(dueDate)}, when the term starts. You can pay early. Payments run through Stripe in test mode, so no real money moves.`
+          : "Payments run through Stripe in test mode. No real money moves."
+      }
     >
       <div className="px-5 py-4">
         {!clientSecret && (

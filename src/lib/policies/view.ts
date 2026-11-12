@@ -6,6 +6,7 @@ import {
   formatUSD,
   fromJSDate,
   replay,
+  todayISO,
   type ISODate,
   type PolicyEvent,
   type PolicyState,
@@ -181,6 +182,9 @@ export async function loadPolicyView(policyId: string) {
           envelopeId: policy.application.docusignEnvelopeId,
         }
       : null,
+    // Premium falls due when the term starts. Until then it can be paid early
+    // but isn't overdue. This matters for renewals, which are created ahead of time.
+    dueDate: state.startDate > todayISO() ? state.startDate : null,
     renewedFrom: policy.renewedFrom,
     renewal: policy.renewal,
     coverage: state.intervals,
