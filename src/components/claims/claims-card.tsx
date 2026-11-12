@@ -25,12 +25,15 @@ export function ClaimsCard({
   claims,
   coverageCodes,
   canDecide,
+  unpaidPremiumCents = 0,
 }: {
   policyId: string;
   claims: ClaimView[];
   coverageCodes: string[];
   /** True for the broker, who approves, denies, and pays. */
   canDecide: boolean;
+  /** Premium still owed on the policy, shown to the broker as context for a decision. */
+  unpaidPremiumCents?: number;
 }) {
   return (
     <Card
@@ -38,6 +41,12 @@ export function ClaimsCard({
       title="Claims"
       description={`A loss is covered if its coverage was in force on the date of loss. An approved claim pays the approved loss less a ${formatUSD(CLAIM_DEDUCTIBLE_CENTS)} deductible, up to the coverage limit. Claim payments are separate from your premium statement.`}
     >
+      {canDecide && unpaidPremiumCents > 0 && (
+        <p className="mx-5 mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="unpaid-premium-note">
+          {formatUSD(unpaidPremiumCents)} of premium is unpaid on this policy. Cover stays in force until the policy
+          is cancelled, so a claim can still be approved. Unpaid premium isn&apos;t deducted from a claim payment.
+        </p>
+      )}
       {claims.length === 0 ? (
         <p className="px-5 pt-4 text-sm text-slate-500">No claims have been filed on this policy.</p>
       ) : (

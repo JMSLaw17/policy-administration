@@ -37,7 +37,11 @@ Creating a customer as the broker also creates a policyholder login with that cu
 
 ```
 charge = annual premium × days covered ÷ days in the term      (rounded to the cent, per line)
+```
 
+**An example with fixed dates.** The demo button builds its dates from the day you click it, so the dates and the two charges on your screen will differ from these. The method is the same, and the difference is always $14.00: seven days of Cyber at $2.00 a day.
+
+```
 Cyber, $730.00 a year, on a 365-day term that ends Oct 1, 2027:
   recorded from Nov 1:   $730.00 × 334 ÷ 365 = $668.00     (the original charge, paid)
   corrected to Oct 25:   $730.00 × 341 ÷ 365 = $682.00
@@ -101,7 +105,7 @@ The demo scenario button skips the DocuSign signature and backdates its own hist
 - **No short-rate penalty or minimum earned premium** on cancellation.
 - **Fixed 12-month term.** No short-term policies or term extensions.
 - **Renewals** can be created at any time and need no new application. A real system offers them 60 to 90 days out, sends a notice, and lapses an unpaid renewal after a grace period. We show the premium as due on the new term's start date and stop there.
-- **Claims** have one flat deductible and a per-claim limit. No reserves, partial payments, or annual aggregate limits.
+- **Claims** have one flat deductible and a per-claim limit. No reserves, partial payments, or annual aggregate limits. A claim can be filed and approved while premium is still unpaid, because cover stays in force until the policy is cancelled. The broker is shown the unpaid amount when deciding, but unpaid premium isn't deducted from the payout, and there is no cancellation for non-payment.
 - **Commission** is earned when premium is charged, not when it is collected.
 - **Sign-in** is two seeded demo roles with a shared password. No sign-up, password reset, or single sign-on.
 

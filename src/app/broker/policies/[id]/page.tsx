@@ -57,7 +57,7 @@ export default async function BrokerPolicyPage(props: PageProps<"/broker/policie
           ) : null
         }
       />
-      <ClaimsCard policyId={view.id} claims={claims} coverageCodes={everCovered} canDecide />
+      <ClaimsCard policyId={view.id} claims={claims} coverageCodes={everCovered} canDecide unpaidPremiumCents={Math.max(view.balanceCents, 0)} />
       {commission && <CommissionCard commission={commission} />}
       {active && (
         <>
