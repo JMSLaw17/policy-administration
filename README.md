@@ -42,6 +42,10 @@ npm run dev
 
 Other commands: `npm test` (unit tests, plus integration tests against a local `policy_admin_test` database that is created automatically), `npm run typecheck`, `npm run lint`.
 
+### Checking the deployed database
+
+`npm run prod:query` prints a read-only summary of the deployed app's database (policies and balances, applications, payments, refunds, and recent integration events). `npm run prod:query -- "select ..."` runs one SELECT. It reads the connection string from a git-ignored `.env.production.local` file (`PROD_DATABASE_URL=...`) and can't change data: the session and every transaction are read-only, and only a single statement is accepted.
+
 ## Stack
 
 Next.js 16 (App Router) and TypeScript, Prisma 7 with Postgres, Tailwind CSS, Zod, Vitest.
