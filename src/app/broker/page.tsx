@@ -1,9 +1,13 @@
 import Link from "next/link";
+import { DemoScenarioCard } from "@/components/broker/demo-scenario-card";
 import { primaryButton } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 
 export const metadata = { title: "Customers" };
+
+// Loading the demo scenario makes two Stripe payments, which takes a few seconds.
+export const maxDuration = 60;
 
 export default async function BrokerHome() {
   await requireUser("BROKER");
@@ -20,6 +24,7 @@ export default async function BrokerHome() {
           New customer
         </Link>
       </div>
+      <DemoScenarioCard />
       <ul className="mt-6 divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white shadow-sm">
         {customers.map((c) => (
           <li key={c.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3 text-sm">

@@ -11,6 +11,7 @@ import { COVERAGES, formatUSD, isISODate, PolicyRuleError } from "@/lib/engine";
 import { StripeNotConfiguredError } from "@/lib/integrations/stripe";
 import { DocuSignError, isDocuSignConfigured } from "@/lib/integrations/docusign";
 import { issueFromApplication, sendApplication, withdrawApplication } from "@/lib/policies/applications";
+import { DemoScenarioError, loadDemoScenario } from "@/lib/policies/demo-scenario";
 import { updateCustomerDetails } from "@/lib/policies/details";
 import { refundCredit, syncOpenPayments } from "@/lib/policies/payments";
 import { renewPolicy } from "@/lib/policies/renewals";
@@ -271,4 +272,21 @@ export async function renewPolicyAction(policyId: string): Promise<FormState> {
   }
   revalidatePolicy(policyId);
   redirect(`/broker/policies/${renewalId}`);
+}
+
+/* --------------------------- Demo scenario --------------------------- */
+
+/** Creates a customer and policy in the reviewers' starting state, and opens the policy. */
+export async function loadDemoScenarioAction(): Promise<FormState> {
+  const user = await requireUser("BROKER");
+  let policyId: string;
+  try {
+    policyId = (await loadDemoScenario(user.id)).policyId;
+  } catch (error) {
+    if (error instanceof DemoScenarioError || error instanceof PolicyRuleError) return { error: error.message };
+    console.error(error);
+    return { error: "The demo scenario couldn't be loaded. Check that the Stripe test keys are set." };
+  }
+  revalidatePath("/broker");
+  redirect(`/broker/policies/${policyId}`);
 }

@@ -94,6 +94,9 @@ model Policy {
   /// The broker's commission rate in basis points (1000 = 10%), fixed when
   /// the policy is issued so later rate changes don't rewrite the past.
   commissionRateBps  Int          @default(1000)
+  /// Set on policies created by the "Load demo scenario" button, which skips
+  /// the application signature and backdates the history. Shown on the policy.
+  demoLoadedAt       DateTime?
   /// For a renewal: the policy whose term this one follows.
   renewedFromId      String?      @unique
   renewedFrom        Policy?      @relation("Renewal", fields: [renewedFromId], references: [id])

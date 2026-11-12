@@ -122,6 +122,21 @@ export function PolicySummary({
   );
 }
 
+/** Says plainly how a policy made by the "Load demo scenario" button differs from one made by hand. */
+export function DemoNotice({ view }: { view: View }) {
+  if (!view.demoLoadedAt) return null;
+  return (
+    <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900" data-testid="demo-notice">
+      <span className="font-medium">Demo scenario. </span>
+      This policy was set up in one click on {dateTime(view.demoLoadedAt)} so the correction can be tried straight
+      away. The policy and the Cyber coverage were recorded and paid for through the app&apos;s normal steps, with two
+      differences: the application wasn&apos;t signed through DocuSign, and the history up to that point was backdated
+      (issued six weeks ago, Cyber added three weeks ago). The two payments are real Stripe test payments, which
+      Stripe shows as made when the scenario was loaded.
+    </p>
+  );
+}
+
 /* ------------------------------ Coverage ------------------------------ */
 
 export function CoverageCard({ view }: { view: View }) {

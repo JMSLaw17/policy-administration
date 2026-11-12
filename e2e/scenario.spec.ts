@@ -147,3 +147,32 @@ test("a button keeps its size and shows a spinner while it works", async ({ page
   expect(await button.boundingBox()).toEqual(before);
   await expect(page).toHaveURL(/\/broker/);
 });
+
+test("the demo scenario button sets up the reviewers' starting point in one click", async ({ browser }) => {
+  const broker = await signIn(browser, "broker@demo.test");
+  await broker.getByRole("button", { name: "Load demo scenario" }).click();
+
+  // Lands on a paid policy with Cyber on it, labelled as demo data.
+  await expect(broker).toHaveURL(/\/broker\/policies\//, { timeout: 60_000 });
+  await expect(balance(broker)).toHaveText("$0.00");
+  await expect(broker.getByTestId("demo-notice")).toContainText("wasn't signed through DocuSign");
+  await expect(broker.locator("#statement").getByText("Payment received (card ending 4242)")).toHaveCount(2);
+
+  // The correction the reviewers will make: Cyber began a week earlier than recorded.
+  await broker.locator("#history-2").getByRole("button", { name: "Correct this" }).click();
+  const form = broker.getByTestId("correct-2");
+  const date = form.locator('input[name="correctedDate"]');
+  const recorded = await date.inputValue();
+  const weekEarlier = new Date(Date.parse(`${recorded}T00:00:00Z`) - 7 * 86_400_000).toISOString().slice(0, 10);
+  await date.fill(weekEarlier);
+  await form.getByRole("button", { name: "Preview correction" }).click();
+  await expect(form.getByTestId("preview-after")).toHaveText("$14.00");
+  await form.getByRole("button", { name: "Confirm correction" }).click();
+  await expect(balance(broker)).toHaveText("$14.00");
+  await expect(broker.locator("#statement")).toContainText("Superseded by correction #3");
+  if (process.env.SHOT) {
+    await broker.setViewportSize({ width: 1200, height: 1500 });
+    await broker.goto(broker.url().split("#")[0]);
+    await broker.screenshot({ path: "docs/screenshots/demo-scenario-corrected.png" });
+  }
+});

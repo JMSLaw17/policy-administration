@@ -237,6 +237,7 @@ export async function loadPolicyView(policyId: string) {
     // Premium falls due when the term starts. Until then it can be paid early
     // but isn't overdue. This matters for renewals, which are created ahead of time.
     dueDate: state.startDate > todayISO() ? state.startDate : null,
+    demoLoadedAt: policy.demoLoadedAt?.toISOString() ?? null,
     renewedFrom: policy.renewedFrom && { id: policy.renewedFrom.id, policyNumber: policy.renewedFrom.policyNumber },
     renewal: policy.renewal && { id: policy.renewal.id, policyNumber: policy.renewal.policyNumber },
     gaps,

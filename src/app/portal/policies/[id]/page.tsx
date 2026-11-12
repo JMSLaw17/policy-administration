@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { ClaimsCard } from "@/components/claims/claims-card";
 import { PaymentsCard } from "@/components/policy/payments-card";
 import { PayCard } from "@/components/portal/pay-card";
-import { CoverageCard, HistoryCard, PolicySummary, StatementCard } from "@/components/policy/policy-sections";
+import { CoverageCard, DemoNotice, HistoryCard, PolicySummary, StatementCard } from "@/components/policy/policy-sections";
 import { BackLink } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -32,6 +32,7 @@ export default async function PortalPolicyPage(props: PageProps<"/portal/policie
     <div className="space-y-6">
       <BackLink href="/portal">My policies</BackLink>
       <PolicySummary view={view} policyBasePath="/portal/policies" />
+      <DemoNotice view={view} />
       <PayCard policyId={view.id} amountDueCents={view.balanceCents} hasPendingPayment={hasPendingPayment} dueDate={view.dueDate} />
       <CoverageCard view={view} />
       <StatementCard view={view} />

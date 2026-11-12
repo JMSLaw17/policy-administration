@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
+import { addDays, todayISO } from "@/lib/engine";
 import { stripe } from "@/lib/integrations/stripe";
 import {
   balanceCents,
@@ -9,6 +10,7 @@ import {
   refundCredit,
   startPayment,
 } from "@/lib/policies/payments";
+import { loadDemoScenario } from "@/lib/policies/demo-scenario";
 import { applyChange, issuePolicy } from "@/lib/policies/service";
 import { loadPolicyView } from "@/lib/policies/view";
 
@@ -191,5 +193,57 @@ describe("Stripe test mode, end to end", () => {
     expect(v.balanceCents).toBe(109_500);
     await expect(startPayment(policy.id)).rejects.toThrow(PaymentError);
     await expect(startPayment(policy.id)).rejects.toThrow(/already being processed/);
+  });
+
+  it("loads the demo scenario: paid, backdated, and ready for the correction and a refund", async () => {
+    const scenario = await loadDemoScenario(brokerId);
+    const today = todayISO();
+    expect(scenario.actualCyberStart).toBe(addDays(today, -21));
+    expect(scenario.recordedCyberStart).toBe(addDays(today, -14));
+
+    let v = await view(scenario.policyId);
+    expect(v.balanceCents).toBe(0);
+    expect(v.demoLoadedAt).toEqual(expect.any(String));
+    expect(v.startDate).toBe(addDays(today, -42));
+    expect(v.statement.map((r) => r.kind)).toEqual(["CHARGE", "PAYMENT", "CHARGE", "PAYMENT"]);
+    expect(v.payments.map((p) => p.status)).toEqual(["SUCCEEDED", "SUCCEEDED"]);
+    // Recorded six and three weeks ago.
+    expect(v.statement.map((r) => r.postedAt.slice(0, 10))).toEqual([
+      addDays(today, -42),
+      addDays(today, -42),
+      addDays(today, -21),
+      addDays(today, -21),
+    ]);
+    expect(v.history.map((h) => h.createdAt.slice(0, 10))).toEqual([addDays(today, -42), addDays(today, -21)]);
+
+    // The reviewers' correction: a week earlier costs 7 more days.
+    const cyberChange = v.history[1];
+    const correct = (effectiveDate: string) =>
+      applyChange(
+        scenario.policyId,
+        {
+          kind: "CORRECTION",
+          transactionId: cyberChange.id,
+          event: { type: "COVERAGE_CHANGE", effectiveDate, add: ["CYBER"], remove: [] },
+        },
+        brokerId,
+      );
+    const cyberLine = v.statement[2];
+    const perDay = Math.round(73_000 / v.termDays);
+    const earlier = await correct(scenario.actualCyberStart);
+    expect(earlier.preview.netChangeCents).toBeGreaterThanOrEqual(7 * perDay - 1);
+    expect(earlier.preview.netChangeCents).toBeLessThanOrEqual(7 * perDay + 1);
+    v = await view(scenario.policyId);
+    expect(v.statement[2]).toMatchObject({ amountCents: cyberLine.amountCents, reversedByLine: 5 });
+    expect(v.history.at(-1)!.createdAt.slice(0, 10) >= addDays(today, -1)).toBe(true); // made now, not backdated
+
+    // And a correction the other way refunds against the real test payments.
+    const later = await correct(addDays(scenario.recordedCyberStart, 7));
+    const credit = -(await balanceCents(scenario.policyId));
+    expect(credit).toBeGreaterThan(0);
+    expect(await refundCredit(scenario.policyId, later.transaction.id)).toMatchObject({ refundedCents: credit });
+    v = await view(scenario.policyId);
+    expect(v.balanceCents).toBe(0);
+    expect(v.refunds.every((r) => r.status === "SUCCEEDED")).toBe(true);
   });
 });

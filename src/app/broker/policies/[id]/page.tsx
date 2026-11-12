@@ -4,7 +4,7 @@ import { CommissionCard, RenewalCard } from "@/components/broker/extension-cards
 import { ClaimsCard } from "@/components/claims/claims-card";
 import { RetryRefundButton } from "@/components/broker/retry-refund";
 import { PaymentsCard } from "@/components/policy/payments-card";
-import { CoverageCard, HistoryCard, PolicySummary, StatementCard } from "@/components/policy/policy-sections";
+import { CoverageCard, DemoNotice, HistoryCard, PolicySummary, StatementCard } from "@/components/policy/policy-sections";
 import { BackLink } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { todayISO } from "@/lib/engine";
@@ -38,6 +38,7 @@ export default async function BrokerPolicyPage(props: PageProps<"/broker/policie
     <div className="space-y-6">
       <BackLink href={`/broker/customers/${view.customer.id}`}>{view.customer.businessName}</BackLink>
       <PolicySummary view={view} policyBasePath="/broker/policies" />
+      <DemoNotice view={view} />
       <CoverageCard view={view} />
       <StatementCard view={view} />
       <PaymentsCard view={view} actions={stuckCredit ? <RetryRefundButton policyId={view.id} /> : null} />

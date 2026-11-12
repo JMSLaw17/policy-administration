@@ -59,7 +59,7 @@ To look at the running app yourself: `npm run dev`, then sign in at http://local
 
 ## The reviewers' scenario
 
-A customer has paid for a policy and a mid-term coverage change. Three weeks later the broker learns the extra coverage began a week earlier than recorded. Correcting the effective date must show the revised amount due and keep the original charge and the correction both visible. `e2e/scenario.spec.ts` drives this end to end.
+A customer has paid for a policy and a mid-term coverage change. Three weeks later the broker learns the extra coverage began a week earlier than recorded. Correcting the effective date must show the revised amount due and keep the original charge and the correction both visible. `e2e/scenario.spec.ts` drives this end to end. The broker's **Load demo scenario** button (`src/lib/policies/demo-scenario.ts`) creates a fresh customer and policy at the scenario's starting point, with real Stripe test payments and a backdated history, so the correction can be tried without issuing, signing, and paying first.
 
 ## MCP servers
 
