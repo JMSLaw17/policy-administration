@@ -12,7 +12,7 @@ import { StripeNotConfiguredError } from "@/lib/integrations/stripe";
 import { DocuSignError, isDocuSignConfigured } from "@/lib/integrations/docusign";
 import { issueFromApplication, sendApplication, withdrawApplication } from "@/lib/policies/applications";
 import { updateCustomerDetails } from "@/lib/policies/details";
-import { refundCredit } from "@/lib/policies/payments";
+import { refundCredit, syncOpenPayments } from "@/lib/policies/payments";
 import { renewPolicy } from "@/lib/policies/renewals";
 import {
   applyChange,
@@ -210,7 +210,10 @@ export async function applyChangeAction(policyId: string, request: unknown): Pro
     throw error;
   }
 
-  // The change is saved. If it left a credit, send it back to the card.
+  // The change is saved. If the customer has a payment form open, bring it
+  // down to the new amount due, and if the change left a credit, send it back
+  // to the card.
+  await syncOpenPayments(policyId);
   const notice = await settleCredit(policyId, result.transaction.id);
   revalidatePolicy(policyId);
   return { ok: true, preview: result.preview, notice };

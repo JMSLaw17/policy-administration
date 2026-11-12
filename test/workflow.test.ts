@@ -157,6 +157,16 @@ describe("the scenario reviewers will test", () => {
   });
 });
 
+describe("policy numbers", () => {
+  it("are never repeated, even for policies issued at the same moment", async () => {
+    const policies = await Promise.all(Array.from({ length: 8 }, () => issue()));
+    const numbers = policies.map((p) => p.policyNumber).sort();
+    expect(new Set(numbers).size).toBe(8);
+    expect(numbers[0]).toBe("SBP-2026-0001");
+    expect(numbers[7]).toBe("SBP-2026-0008");
+  });
+});
+
 describe("cancellation", () => {
   it("credits unused days and leaves a credit to refund", async () => {
     const policy = await issue();

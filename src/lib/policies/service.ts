@@ -128,9 +128,15 @@ export async function issuePolicy(input: {
   });
 }
 
+/**
+ * Policy numbers come from a database counter (a Postgres sequence), which
+ * never hands out the same number twice, even to two policies issued at the
+ * same moment. A number is used up even if issuing then fails, so the numbers
+ * are unique but can have gaps.
+ */
 async function nextPolicyNumber(tx: Tx, startDate: ISODate) {
-  const count = await tx.policy.count();
-  return `SBP-${startDate.slice(0, 4)}-${String(count + 1).padStart(4, "0")}`;
+  const [{ next }] = await tx.$queryRaw<{ next: bigint }[]>`SELECT nextval('"policy_number_seq"') AS next`;
+  return `SBP-${startDate.slice(0, 4)}-${String(next).padStart(4, "0")}`;
 }
 
 /* ------------------------------------------------------------------ */

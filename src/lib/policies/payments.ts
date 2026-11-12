@@ -46,11 +46,7 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
     if (intent.status === "processing") {
       throw new PaymentError("A payment is already being processed. It can take a little while to clear.");
     }
-    const unfinished =
-      intent.status === "requires_payment_method" ||
-      intent.status === "requires_confirmation" ||
-      intent.status === "requires_action";
-    if (unfinished && !intent.last_payment_error) {
+    if (isUnfinished(intent) && !intent.last_payment_error) {
       if (intent.amount !== due) {
         intent = await stripe().paymentIntents.update(intent.id, { amount: due });
         await db.payment.update({ where: { id: open.id }, data: { amountCents: due } });
@@ -139,6 +135,10 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
         },
       });
     });
+    // The amount due can drop while a payment is clearing (a bank debit takes
+    // days). If this payment left the customer in credit, send the extra back
+    // now rather than waiting for the broker's next change.
+    await refundOverpayment(payment.policyId);
     return;
   }
 
@@ -159,6 +159,16 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
   }
 }
 
+/** Refunds any credit a payment left behind. A failure here must never undo the payment. */
+async function refundOverpayment(policyId: string) {
+  try {
+    await refundCredit(policyId);
+  } catch (error) {
+    // The credit stays on the statement, and the broker can use Retry refund.
+    console.error("Could not refund a credit after a payment", error);
+  }
+}
+
 function methodLabel(intent: Stripe.PaymentIntent) {
   const type = intent.payment_method_types?.length === 1 ? intent.payment_method_types[0] : null;
   const pm = typeof intent.payment_method === "object" ? intent.payment_method : null;
@@ -166,6 +176,84 @@ function methodLabel(intent: Stripe.PaymentIntent) {
   if (kind === "card") return pm?.card?.last4 ? `card ending ${pm.card.last4}` : "card";
   if (kind === "us_bank_account") return "bank account";
   return "Stripe";
+}
+
+/**
+ * Keeps an unfinished payment in step after a broker's change lowers the
+ * amount due, so a customer with the payment form open can't pay the old,
+ * higher amount.
+ *
+ *  - Less is due now: the unfinished payment is lowered to the new amount.
+ *  - Nothing is due now: the unfinished payment is cancelled.
+ *  - More is due now: the payment is left alone. The customer agreed to the
+ *    amount on their screen, so we never raise it behind their back. The rest
+ *    simply stays due.
+ *
+ * A payment Stripe is already processing can't be changed. If it clears for
+ * too much, the extra is refunded when it succeeds (see recordPaymentIntent).
+ */
+export async function syncOpenPayments(policyId: string) {
+  const open = await db.payment.findMany({
+    where: {
+      policyId,
+      stripePaymentIntentId: { not: null },
+      // Not yet submitted, or declined but still open for another try.
+      OR: [{ status: "INITIATED" }, { status: "FAILED", failureReason: { not: CANCELLED_NOTE } }],
+    },
+  });
+  if (open.length === 0) return;
+
+  const due = await balanceCents(policyId);
+  for (const p of open) {
+    try {
+      const intent = await stripe().paymentIntents.retrieve(p.stripePaymentIntentId!, {
+        expand: ["payment_method"],
+      });
+      if (!isUnfinished(intent)) {
+        // It has moved on since we last heard (paid, processing, or cancelled).
+        await recordPaymentIntent(intent);
+        continue;
+      }
+      if (due <= 0) {
+        const cancelled = await stripe().paymentIntents.cancel(intent.id);
+        await recordPaymentIntent(cancelled);
+        await logIntegrationEvent({
+          provider: "stripe",
+          direction: "OUTBOUND",
+          eventType: "payment_intent.cancel",
+          externalId: intent.id,
+          policyId,
+          payload: { reason: "Nothing is due after a policy change", status: cancelled.status },
+        });
+      } else if (intent.amount > due) {
+        const updated = await stripe().paymentIntents.update(intent.id, { amount: due });
+        // A declined attempt keeps the amount the customer actually tried to pay.
+        if (p.status === "INITIATED") {
+          await db.payment.update({ where: { id: p.id }, data: { amountCents: due } });
+        }
+        await logIntegrationEvent({
+          provider: "stripe",
+          direction: "OUTBOUND",
+          eventType: "payment_intent.update",
+          externalId: intent.id,
+          policyId,
+          payload: { amount: due, previousAmount: intent.amount, status: updated.status },
+        });
+      }
+    } catch (error) {
+      // Best effort. If the old amount is paid after all, the extra is refunded on success.
+      console.error("Could not update an open payment after a policy change", error);
+    }
+  }
+}
+
+/** A payment the customer could still complete. */
+function isUnfinished(intent: Stripe.PaymentIntent) {
+  return (
+    intent.status === "requires_payment_method" ||
+    intent.status === "requires_confirmation" ||
+    intent.status === "requires_action"
+  );
 }
 
 /** Backstop for missed webhooks: ask Stripe about any payments or refunds still pending. */
@@ -201,8 +289,8 @@ export async function reconcilePending(policyId: string) {
 
 /**
  * If the customer has a credit (they've paid more than they owe), send it
- * back to their card. Runs after every change to a policy, and can be re-run
- * by the broker if a refund failed.
+ * back to their card. Runs after every change to a policy and after every
+ * successful payment, and can be re-run by the broker if a refund failed.
  *
  * A credit is first absorbed by anything else owed, simply because the
  * balance is one running total. Only a negative balance is refunded.
