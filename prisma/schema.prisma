@@ -148,6 +148,8 @@ enum TransactionType {
   CORRECTION
   CANCELLATION
   DETAILS_CHANGE
+  /// A recorded fact that changes no amount, e.g. a gap in coverage before a renewal.
+  NOTE
 }
 
 /// The policy history. Rows are only ever inserted. A correction is a new row

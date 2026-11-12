@@ -6,7 +6,9 @@ import {
   allLines,
   COMMISSION_RATE_BPS,
   coverageName,
+  daysBetween,
   formatDate,
+  fromJSDate,
   getCoverage,
   planCorrection,
   PolicyRuleError,
@@ -32,6 +34,10 @@ import { buildSlots, rootIdByTransaction, toHistory, type Slot } from "./history
  *
  * For a new action the difference is just that action's lines. For a
  * correction it is a reversal of the old lines plus the corrected ones.
+ *
+ * A policy and its renewal are separate policies, but their dates are tied:
+ * the renewal's term must never overlap the term it renews, and a gap between
+ * them is only allowed on purpose. See "A policy and its renewal" below.
  */
 
 type Tx = Prisma.TransactionClient;
@@ -53,7 +59,8 @@ export type LineCalc = {
   to: ISODate;
 };
 
-export type ChangePreview = {
+/** What an action does to one policy's statement. */
+export type StatementEffect = {
   /** Lines on the statement that will be reversed, with the reversing amount. */
   reversals: PlannedLine[];
   /** New lines that will be posted. */
@@ -63,10 +70,54 @@ export type ChangePreview = {
   balanceAfterCents: number;
 };
 
-export type ChangeRequest =
-  | { kind: "COVERAGE_CHANGE"; effectiveDate: ISODate; add: string[]; remove: string[]; reason?: string }
-  | { kind: "CANCELLATION"; effectiveDate: ISODate; reason?: string }
-  | { kind: "CORRECTION"; transactionId: string; event: CorrectedEvent; reason?: string };
+export type ChangePreview = StatementEffect & {
+  /** Set when the action moves the end of this policy's cover and it has a renewal. */
+  renewal: RenewalEffect | null;
+  /** Set when the action leaves days without cover between this policy and the one it renews. */
+  gapAfterOriginal: (Gap & { policyId: string; policyNumber: string }) | null;
+  /** True when the action, as chosen, leaves a gap. A gap can only be saved with a reason. */
+  reasonRequired: boolean;
+};
+
+/** Days with no cover: from `from` up to, not including, `to`. */
+export type Gap = { from: ISODate; to: ISODate; days: number };
+
+/**
+ * What to do with a policy's renewal when the end of the policy's cover moves:
+ *  - FOLLOW: the renewal moves with it (or is cancelled with it), so there is
+ *    no gap and no overlap. This is the default.
+ *  - KEEP: the renewal stays where it is, leaving a gap. Needs a reason, and
+ *    is never allowed if it would make the two policies overlap.
+ */
+export type RenewalChoice = "FOLLOW" | "KEEP";
+
+export type RenewalEffect = {
+  policyId: string;
+  policyNumber: string;
+  /** The options open to the broker. Never empty. */
+  choices: RenewalChoice[];
+  chosen: RenewalChoice;
+  /** What FOLLOW does to the renewal, and to any renewals after it. Empty if it can't follow. */
+  follow: FollowStep[];
+  /** Why the renewal can't follow, if it can't. */
+  followBlocked: string | null;
+  /** The days KEEP would leave without cover. Null if KEEP isn't allowed. */
+  gapIfKept: Gap | null;
+};
+
+export type FollowStep = StatementEffect & {
+  policyId: string;
+  policyNumber: string;
+  action: "MOVE" | "CANCEL";
+  /** Plain-English account of what happens to this policy. */
+  summary: string;
+};
+
+export type ChangeRequest = (
+  | { kind: "COVERAGE_CHANGE"; effectiveDate: ISODate; add: string[]; remove: string[] }
+  | { kind: "CANCELLATION"; effectiveDate: ISODate }
+  | { kind: "CORRECTION"; transactionId: string; event: CorrectedEvent }
+) & { reason?: string; renewal?: RenewalChoice };
 
 /** What the broker can change when correcting an action. */
 export type CorrectedEvent =
@@ -145,77 +196,355 @@ async function nextPolicyNumber(tx: Tx, startDate: ISODate) {
 
 /** Shows what an action would do to the statement, without saving anything. */
 export async function previewChange(policyId: string, request: ChangeRequest): Promise<ChangePreview> {
-  return db.$transaction(async (tx) => (await plan(tx, policyId, request)).preview);
+  return db.$transaction(async (tx) => (await planWithRenewal(tx, policyId, request)).preview);
 }
 
-/** Saves the action and posts its lines to the statement. */
+/**
+ * Saves the action and posts its lines to the statement. If the action moves
+ * this policy's renewal as well, both are saved together or not at all.
+ *
+ * `affected` lists every policy that was changed, this one first.
+ */
 export async function applyChange(policyId: string, request: ChangeRequest, userId: string) {
   return db.$transaction(async (tx) => {
-    // One change at a time per policy, so two brokers can't post from the same starting point.
-    await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${policyId} FOR UPDATE`;
-    const planned = await plan(tx, policyId, request);
-    const { slots, state, newEvent, correctedSlot, toReverse, toPost, preview } = planned;
+    // One change at a time per policy and its renewals, so two brokers can't
+    // post from the same starting point.
+    await lockChain(tx, policyId);
+    const { steps, preview } = await planWithRenewal(tx, policyId, request);
+    if (preview.reasonRequired && !request.reason?.trim()) {
+      throw new PolicyRuleError("This leaves days without coverage, so it needs a reason. Enter one to confirm.");
+    }
 
-    const last = await tx.policyTransaction.aggregate({ where: { policyId }, _max: { seq: true } });
-    const transaction = await tx.policyTransaction.create({
-      data: {
-        policyId,
-        seq: (last._max.seq ?? 0) + 1,
-        type: correctedSlot ? "CORRECTION" : newEvent.type,
-        effectiveDate: toJSDate(newEvent.type === "ISSUE" ? newEvent.startDate : newEvent.effectiveDate),
-        data: newEvent,
-        reason: request.reason?.trim() || null,
-        correctsId: correctedSlot?.latest.id ?? null,
-        createdById: userId,
-      },
-    });
+    const transactions: Awaited<ReturnType<typeof post>>[] = [];
+    for (const step of steps) transactions.push(await post(tx, step, userId));
+    for (const note of gapNotes(steps[0], preview, request.reason)) {
+      await postNote(tx, note, userId);
+    }
 
-    // The action whose premium a line represents: this one, if the line belongs
-    // to the slot being added or corrected, otherwise that slot's current version.
-    const originFor = (eventId: string) => {
-      if (eventId === NEW || eventId === correctedSlot?.root.id) return transaction.id;
-      return slots.find((s) => s.root.id === eventId)!.latest.id;
+    return {
+      transaction: transactions[0],
+      preview,
+      affected: steps.map((step, i) => ({ policyId: step.policyId, transactionId: transactions[i].id })),
     };
-    const eventFor = (eventId: string) =>
-      eventId === NEW || eventId === correctedSlot?.root.id
-        ? newEvent
-        : slots.find((s) => s.root.id === eventId)!.event;
-
-    for (const posted of toReverse) {
-      const original = await tx.ledgerEntry.findUniqueOrThrow({ where: { id: posted.entryId } });
-      await tx.ledgerEntry.create({
-        data: {
-          policyId,
-          kind: "REVERSAL",
-          amountCents: -original.amountCents,
-          description: `Reversal: ${original.description}`,
-          postedByTransactionId: transaction.id,
-          originTransactionId: original.originTransactionId,
-          reversesEntryId: original.id,
-          coverageCode: original.coverageCode,
-          calc: original.calc ?? undefined,
-        },
-      });
-    }
-    for (const line of toPost) {
-      await tx.ledgerEntry.create({
-        data: entryData(policyId, transaction.id, originFor(line.eventId), line, describe(line, eventFor(line.eventId))),
-      });
-    }
-
-    await tx.policy.update({
-      where: { id: policyId },
-      data: {
-        startDate: toJSDate(state.startDate),
-        endDate: toJSDate(state.endDate),
-        status: state.cancelledEffective ? "CANCELLED" : "ACTIVE",
-        cancelledEffective: state.cancelledEffective ? toJSDate(state.cancelledEffective) : null,
-      },
-    });
-
-    return { transaction, preview };
   });
 }
+
+/** One policy's part of a change: the policy, the request made of it, and what that does. */
+type Step = { policyId: string; policyNumber: string; request: ChangeRequest; planned: Plan };
+
+/** Writes one step: the history entry, its reversals, and its new lines. */
+async function post(tx: Tx, step: Step, userId: string) {
+  const { policyId, request } = step;
+  const { slots, state, newEvent, correctedSlot, toReverse, toPost } = step.planned;
+
+  const last = await tx.policyTransaction.aggregate({ where: { policyId }, _max: { seq: true } });
+  const transaction = await tx.policyTransaction.create({
+    data: {
+      policyId,
+      seq: (last._max.seq ?? 0) + 1,
+      type: correctedSlot ? "CORRECTION" : newEvent.type,
+      effectiveDate: toJSDate(newEvent.type === "ISSUE" ? newEvent.startDate : newEvent.effectiveDate),
+      data: newEvent,
+      reason: request.reason?.trim() || null,
+      correctsId: correctedSlot?.latest.id ?? null,
+      createdById: userId,
+    },
+  });
+
+  // The action whose premium a line represents: this one, if the line belongs
+  // to the slot being added or corrected, otherwise that slot's current version.
+  const originFor = (eventId: string) => {
+    if (eventId === NEW || eventId === correctedSlot?.root.id) return transaction.id;
+    return slots.find((s) => s.root.id === eventId)!.latest.id;
+  };
+  const eventFor = (eventId: string) =>
+    eventId === NEW || eventId === correctedSlot?.root.id
+      ? newEvent
+      : slots.find((s) => s.root.id === eventId)!.event;
+
+  for (const posted of toReverse) {
+    const original = await tx.ledgerEntry.findUniqueOrThrow({ where: { id: posted.entryId } });
+    await tx.ledgerEntry.create({
+      data: {
+        policyId,
+        kind: "REVERSAL",
+        amountCents: -original.amountCents,
+        description: `Reversal: ${original.description}`,
+        postedByTransactionId: transaction.id,
+        originTransactionId: original.originTransactionId,
+        reversesEntryId: original.id,
+        coverageCode: original.coverageCode,
+        calc: original.calc ?? undefined,
+      },
+    });
+  }
+  for (const line of toPost) {
+    await tx.ledgerEntry.create({
+      data: entryData(policyId, transaction.id, originFor(line.eventId), line, describe(line, eventFor(line.eventId))),
+    });
+  }
+
+  await tx.policy.update({
+    where: { id: policyId },
+    data: {
+      startDate: toJSDate(state.startDate),
+      endDate: toJSDate(state.endDate),
+      status: state.cancelledEffective ? "CANCELLED" : "ACTIVE",
+      cancelledEffective: state.cancelledEffective ? toJSDate(state.cancelledEffective) : null,
+    },
+  });
+
+  return transaction;
+}
+
+/* ------------------------------------------------------------------ */
+/* A policy and its renewal                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A renewal is a separate policy that picks up where the one before it ends.
+ * Two rules tie their dates together:
+ *
+ *  1. They never overlap. An overlap would charge the customer twice for the
+ *     same days and put a claim on those days under two policies.
+ *  2. A gap between them (days with no cover) is allowed only on purpose: the
+ *     broker has to choose it and give a reason. Lapses do happen.
+ *
+ * So when an action moves the end of a policy's cover (a corrected start
+ * date, a cancellation, a corrected cancellation date), its renewal follows
+ * by default: it is moved to start the day the policy now ends, or cancelled
+ * from its first day if the policy was cancelled. The renewal's own renewal
+ * follows in turn. The broker can instead keep the renewal where it is, if
+ * that leaves a gap rather than an overlap.
+ *
+ * And when an action moves a renewal's own start date, it may not move into
+ * the term it renews, and moving it later needs a reason.
+ */
+
+/** The days a policy actually covers: from `start` up to, not including, `coverEnd`. */
+type Span = { start: ISODate; coverEnd: ISODate };
+
+type PolicyDates = { startDate: Date; endDate: Date; cancelledEffective: Date | null };
+const spanOfRow = (p: PolicyDates): Span => ({
+  start: fromJSDate(p.startDate),
+  coverEnd: fromJSDate(p.cancelledEffective ?? p.endDate),
+});
+const spanOfState = (s: PolicyState): Span => ({ start: s.startDate, coverEnd: s.cancelledEffective ?? s.endDate });
+/** False for a policy cancelled from its first day, which covers nothing. */
+const hasDays = (span: Span) => span.start < span.coverEnd;
+const gapBetween = (from: ISODate, to: ISODate): Gap => ({ from, to, days: daysBetween(from, to) });
+
+const linked = { id: true, policyNumber: true, startDate: true, endDate: true, cancelledEffective: true } as const;
+
+/**
+ * Plans an action on a policy together with what it means for the policies
+ * linked to it. `asFollower` is set when this policy is itself being moved to
+ * follow the one it renews, whose new dates aren't saved yet.
+ */
+async function planWithRenewal(
+  tx: Tx,
+  policyId: string,
+  request: ChangeRequest,
+  asFollower = false,
+): Promise<{ steps: Step[]; preview: ChangePreview }> {
+  const policy = await tx.policy.findUnique({
+    where: { id: policyId },
+    select: { ...linked, renewedFrom: { select: linked }, renewal: { select: linked } },
+  });
+  if (!policy) throw new PolicyRuleError("Policy not found.");
+
+  const planned = await plan(tx, policyId, request);
+  const before = spanOfRow(policy);
+  const after = spanOfState(planned.state);
+  const steps: Step[] = [{ policyId, policyNumber: policy.policyNumber, request, planned }];
+
+  // Looking back: has this policy's first day moved relative to the one it renews?
+  let gapAfterOriginal: ChangePreview["gapAfterOriginal"] = null;
+  const original = policy.renewedFrom;
+  if (original && !asFollower && hasDays(after) && (after.start !== before.start || !hasDays(before))) {
+    const originalEnd = spanOfRow(original).coverEnd;
+    if (after.start < originalEnd) {
+      throw new PolicyRuleError(
+        `This policy renews ${original.policyNumber}, which is in force until ${formatDate(originalEnd)}, so it can't start before then. Two policies can't cover the same days. To move both, correct the dates on ${original.policyNumber} and this policy will follow.`,
+      );
+    }
+    if (after.start > originalEnd) {
+      gapAfterOriginal = {
+        policyId: original.id,
+        policyNumber: original.policyNumber,
+        ...gapBetween(originalEnd, after.start),
+      };
+    }
+  }
+
+  // Looking forward: has the end of this policy's cover moved away from its renewal's first day?
+  let renewal: RenewalEffect | null = null;
+  const next = policy.renewal;
+  if (next && hasDays(spanOfRow(next)) && after.coverEnd !== before.coverEnd) {
+    const nextStart = spanOfRow(next).start;
+    if (nextStart !== after.coverEnd) {
+      let follow: Step[] = [];
+      let followBlocked: string | null = null;
+      try {
+        const followRequest = await requestToFollow(tx, next.id, policy.policyNumber, planned.state, request.reason);
+        follow = (await planWithRenewal(tx, next.id, followRequest, true)).steps;
+      } catch (error) {
+        if (!(error instanceof PolicyRuleError)) throw error;
+        followBlocked = error.message;
+      }
+
+      const overlapIfKept = nextStart < after.coverEnd;
+      const choices: RenewalChoice[] = [];
+      if (follow.length > 0) choices.push("FOLLOW");
+      if (!overlapIfKept) choices.push("KEEP");
+      if (choices.length === 0) {
+        throw new PolicyRuleError(
+          `This would make the policy overlap with its renewal ${next.policyNumber}, which starts ${formatDate(nextStart)}, and the renewal can't be moved with it: ${followBlocked}`,
+        );
+      }
+      if (request.renewal && !choices.includes(request.renewal)) {
+        throw new PolicyRuleError(
+          request.renewal === "KEEP"
+            ? `The renewal ${next.policyNumber} can't stay where it is, because the two policies would both cover ${formatDate(nextStart)} to ${formatDate(after.coverEnd)}.`
+            : `The renewal ${next.policyNumber} can't follow this change: ${followBlocked}`,
+        );
+      }
+      // Follow by default. But a renewal that was already standing apart was
+      // left there on purpose, so it stays put unless the broker says otherwise.
+      const alreadyApart = nextStart !== before.coverEnd;
+      const chosen = request.renewal ?? (alreadyApart && choices.includes("KEEP") ? "KEEP" : choices[0]);
+      if (chosen === "FOLLOW") steps.push(...follow);
+
+      renewal = {
+        policyId: next.id,
+        policyNumber: next.policyNumber,
+        choices,
+        chosen,
+        follow: follow.map(followStep),
+        followBlocked,
+        gapIfKept: overlapIfKept ? null : gapBetween(after.coverEnd, nextStart),
+      };
+    }
+  }
+
+  return {
+    steps,
+    preview: {
+      ...planned.preview,
+      renewal,
+      gapAfterOriginal,
+      reasonRequired: Boolean(gapAfterOriginal || (renewal?.chosen === "KEEP" && renewal.gapIfKept)),
+    },
+  };
+}
+
+/**
+ * The request that makes a renewal follow the policy it renews: start the day
+ * that policy now ends, or, if that policy has been cancelled, be cancelled
+ * from its own first day.
+ */
+async function requestToFollow(
+  tx: Tx,
+  renewalId: string,
+  leaderNumber: string,
+  leader: PolicyState,
+  brokerReason: string | undefined,
+): Promise<ChangeRequest> {
+  const transactions = await tx.policyTransaction.findMany({ where: { policyId: renewalId }, orderBy: { seq: "asc" } });
+  const slots = buildSlots(transactions);
+  const issue = slots.find((s) => s.event.type === "ISSUE");
+  if (!issue || issue.event.type !== "ISSUE") throw new PolicyRuleError("Policy not found.");
+  const given = brokerReason?.trim() ? ` Reason given: ${brokerReason.trim()}` : "";
+
+  if (leader.cancelledEffective) {
+    const reason = `Cancelled together with ${leaderNumber}, the policy it renews.${given}`;
+    const effectiveDate = issue.event.startDate;
+    const cancellation = slots.find((s) => s.event.type === "CANCELLATION");
+    return cancellation
+      ? { kind: "CORRECTION", transactionId: cancellation.root.id, event: { type: "CANCELLATION", effectiveDate }, reason, renewal: "FOLLOW" }
+      : { kind: "CANCELLATION", effectiveDate, reason, renewal: "FOLLOW" };
+  }
+  return {
+    kind: "CORRECTION",
+    transactionId: issue.root.id,
+    event: { type: "ISSUE", startDate: leader.endDate, coverages: issue.event.coverages.map((c) => c.code) },
+    reason: `Moved to follow ${leaderNumber}, which now ends ${formatDate(leader.endDate)}.${given}`,
+    renewal: "FOLLOW",
+  };
+}
+
+function followStep(step: Step): FollowStep {
+  const { state, preview } = step.planned;
+  const cancelled = step.request.kind === "CANCELLATION" || state.cancelledEffective === state.startDate;
+  return {
+    ...preview,
+    policyId: step.policyId,
+    policyNumber: step.policyNumber,
+    action: cancelled ? "CANCEL" : "MOVE",
+    summary: cancelled
+      ? `Cancelled from its first day, ${formatDate(state.startDate)}, so nothing is owed on it.`
+      : `Moves to ${formatDate(state.startDate)} to ${formatDate(state.endDate)}.`,
+  };
+}
+
+/** Locks a policy, the policies it renews, and its renewals, always in the same order. */
+async function lockChain(tx: Tx, policyId: string) {
+  let first = policyId;
+  for (;;) {
+    const p = await tx.policy.findUnique({ where: { id: first }, select: { renewedFromId: true } });
+    if (!p?.renewedFromId) break;
+    first = p.renewedFromId;
+  }
+  for (let id: string | null = first; id; ) {
+    await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${id} FOR UPDATE`;
+    const next: { id: string } | null = await tx.policy.findUnique({ where: { renewedFromId: id }, select: { id: true } });
+    id = next?.id ?? null;
+  }
+}
+
+/** A gap is written into the history of both policies it sits between. */
+type GapNote = { policyId: string; effectiveDate: ISODate; note: string };
+
+function gapNotes(changed: Step, preview: ChangePreview, reason: string | undefined): GapNote[] {
+  const { policyId, policyNumber } = changed;
+  const why = reason?.trim() ? ` Reason: ${reason.trim()}` : "";
+  const text = (gap: Gap, earlier: string, later: string) =>
+    `No coverage from ${formatDate(gap.from)} to ${formatDate(gap.to)} (${gap.days} ${gap.days === 1 ? "day" : "days"}), between ${earlier} and its renewal ${later}.${why}`;
+
+  const notes: GapNote[] = [];
+  const back = preview.gapAfterOriginal;
+  if (back) {
+    const note = text(back, back.policyNumber, policyNumber);
+    notes.push({ policyId, effectiveDate: back.from, note });
+    notes.push({ policyId: back.policyId, effectiveDate: back.from, note });
+  }
+  const forward = preview.renewal;
+  if (forward?.chosen === "KEEP" && forward.gapIfKept) {
+    const note = text(forward.gapIfKept, policyNumber, forward.policyNumber);
+    notes.push({ policyId, effectiveDate: forward.gapIfKept.from, note });
+    notes.push({ policyId: forward.policyId, effectiveDate: forward.gapIfKept.from, note });
+  }
+  return notes;
+}
+
+/** A history entry that records a fact without changing any amount. */
+async function postNote(tx: Tx, note: GapNote, userId: string) {
+  const last = await tx.policyTransaction.aggregate({ where: { policyId: note.policyId }, _max: { seq: true } });
+  await tx.policyTransaction.create({
+    data: {
+      policyId: note.policyId,
+      seq: (last._max.seq ?? 0) + 1,
+      type: "NOTE",
+      effectiveDate: toJSDate(note.effectiveDate),
+      data: { title: "Gap in coverage", note: note.note },
+      createdById: userId,
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Planning one policy's change                                        */
+/* ------------------------------------------------------------------ */
 
 type Plan = {
   slots: Slot[];
@@ -224,7 +553,7 @@ type Plan = {
   correctedSlot: Slot | null;
   toReverse: PostedLine[];
   toPost: PremiumLine[];
-  preview: ChangePreview;
+  preview: StatementEffect;
 };
 
 async function plan(tx: Tx, policyId: string, request: ChangeRequest): Promise<Plan> {

@@ -120,8 +120,8 @@ export function EditCoverageCard({
         <SavedNotice done={flow.done} notice={flow.notice} label="Coverage change saved." />
         {flow.preview && (
           <PreviewPanel
+            flow={flow}
             preview={flow.preview}
-            pending={flow.pending}
             confirmLabel="Confirm coverage change"
             onConfirm={() => flow.confirm(() => setReason(""))}
             onBack={flow.reset}
@@ -189,8 +189,8 @@ export function CancelCard({
         <FormError error={flow.error} />
         {flow.preview && (
           <PreviewPanel
+            flow={flow}
             preview={flow.preview}
-            pending={flow.pending}
             confirmLabel="Cancel the policy"
             danger
             onConfirm={() => flow.confirm()}
@@ -359,8 +359,8 @@ export function CorrectControl({
       <FormError error={flow.error} />
       {flow.preview && (
         <PreviewPanel
+          flow={flow}
           preview={flow.preview}
-          pending={flow.pending}
           confirmLabel="Confirm correction"
           onConfirm={() => flow.confirm(close)}
           onBack={flow.reset}

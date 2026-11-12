@@ -283,6 +283,197 @@ describe("renewals", () => {
   });
 });
 
+describe("a policy and its renewal", () => {
+  const PREMIUM = 109_500 + 73_000; // General Liability and Cyber for a full term
+
+  /** A policy from Oct 1, 2026 and its renewal from Oct 1, 2027. */
+  async function renewed() {
+    const policy = await issue(["GL", "CYBER"]);
+    const renewal = await renewPolicy(policy.id, brokerId);
+    return { policy, renewal };
+  }
+  const issueOf = async (policyId: string) =>
+    (await db.policyTransaction.findFirstOrThrow({ where: { policyId, type: "ISSUE" } })).id;
+  const moveStart = async (policyId: string, startDate: string, extra: { reason?: string; renewal?: "FOLLOW" | "KEEP" } = {}) =>
+    applyChange(
+      policyId,
+      {
+        kind: "CORRECTION",
+        transactionId: await issueOf(policyId),
+        event: { type: "ISSUE", startDate, coverages: ["GL", "CYBER"] },
+        ...extra,
+      },
+      brokerId,
+    );
+  const term = async (policyId: string) => {
+    const view = (await loadPolicyView(policyId))!;
+    return [view.startDate, view.endDate];
+  };
+  const notes = async (policyId: string) =>
+    (await loadPolicyView(policyId))!.history.filter((h) => h.type === "NOTE").map((h) => h.summary);
+
+  it("moves the renewal along when the policy's dates are corrected, so the terms still meet", async () => {
+    const { policy, renewal } = await renewed();
+    await payInFull(renewal.id);
+
+    const { preview, affected } = await moveStart(policy.id, "2026-10-15");
+    expect(preview.renewal).toMatchObject({ policyNumber: renewal.policyNumber, chosen: "FOLLOW", choices: ["FOLLOW"] });
+    expect(preview.reasonRequired).toBe(false);
+    expect(affected.map((a) => a.policyId)).toEqual([policy.id, renewal.id]);
+
+    expect(await term(policy.id)).toEqual(["2026-10-15", "2027-10-15"]);
+    expect(await term(renewal.id)).toEqual(["2027-10-15", "2028-10-15"]);
+
+    // The renewal's old lines are reversed and rebooked for the new dates. A full term costs the same.
+    const view = (await loadPolicyView(renewal.id))!;
+    expect(view.statement.map((r) => [r.kind, r.amountCents])).toEqual([
+      ["CHARGE", 73_000],
+      ["CHARGE", 109_500],
+      ["PAYMENT", -PREMIUM],
+      ["REVERSAL", -73_000],
+      ["REVERSAL", -109_500],
+      ["CHARGE", 73_000],
+      ["CHARGE", 109_500],
+    ]);
+    expect(view.balanceCents).toBe(0);
+    expect(view.history.at(-1)).toMatchObject({ type: "CORRECTION", reason: expect.stringContaining(policy.policyNumber) });
+    expect(view.gaps).toEqual([]);
+    expect((await loadPolicyView(policy.id))!.gaps).toEqual([]);
+  });
+
+  it("never lets the two overlap", async () => {
+    const { policy, renewal } = await renewed();
+
+    // The policy now ends Oct 15, 2027, so the renewal can't stay at Oct 1.
+    await expect(moveStart(policy.id, "2026-10-15", { renewal: "KEEP" })).rejects.toThrow(/can't stay where it is/);
+    // And the renewal can't be moved into the term it renews.
+    await expect(moveStart(renewal.id, "2027-09-15", { reason: "Typo" })).rejects.toThrow(/can't start before then/);
+
+    expect(await term(policy.id)).toEqual(["2026-10-01", "2027-10-01"]);
+    expect(await term(renewal.id)).toEqual(["2027-10-01", "2028-10-01"]);
+  });
+
+  it("allows a gap only as a deliberate choice with a reason, and records it on both policies", async () => {
+    const { policy, renewal } = await renewed();
+
+    // The policy really started two weeks earlier, so it ends two weeks earlier.
+    const preview = await previewChange(policy.id, {
+      kind: "CORRECTION",
+      transactionId: await issueOf(policy.id),
+      event: { type: "ISSUE", startDate: "2026-09-17", coverages: ["GL", "CYBER"] },
+      renewal: "KEEP",
+    });
+    expect(preview.renewal).toMatchObject({
+      chosen: "KEEP",
+      choices: ["FOLLOW", "KEEP"],
+      gapIfKept: { from: "2027-09-17", to: "2027-10-01", days: 14 },
+    });
+    expect(preview.reasonRequired).toBe(true);
+
+    await expect(moveStart(policy.id, "2026-09-17", { renewal: "KEEP" })).rejects.toThrow(/needs a reason/);
+    await moveStart(policy.id, "2026-09-17", { renewal: "KEEP", reason: "Customer asked for the renewal date to stay" });
+
+    expect(await term(policy.id)).toEqual(["2026-09-17", "2027-09-17"]);
+    expect(await term(renewal.id)).toEqual(["2027-10-01", "2028-10-01"]);
+    expect((await loadPolicyView(policy.id))!.gaps).toMatchObject([
+      { side: "AFTER", policyNumber: renewal.policyNumber, from: "2027-09-17", to: "2027-10-01", days: 14 },
+    ]);
+    expect((await loadPolicyView(renewal.id))!.gaps).toMatchObject([
+      { side: "BEFORE", policyNumber: policy.policyNumber, days: 14 },
+    ]);
+    for (const id of [policy.id, renewal.id]) {
+      expect(await notes(id)).toEqual([
+        expect.stringMatching(/^No coverage from Sep 17, 2027 to Oct 1, 2027 \(14 days\).*Reason: Customer asked/),
+      ]);
+    }
+  });
+
+  it("needs a reason to start the renewal late, too", async () => {
+    const { policy, renewal } = await renewed();
+    await expect(moveStart(renewal.id, "2027-10-08")).rejects.toThrow(/needs a reason/);
+
+    const { preview } = await moveStart(renewal.id, "2027-10-08", { reason: "Coverage lapsed for a week" });
+    expect(preview.gapAfterOriginal).toMatchObject({ policyNumber: policy.policyNumber, from: "2027-10-01", to: "2027-10-08", days: 7 });
+    expect(await notes(policy.id)).toHaveLength(1);
+    expect(await notes(renewal.id)).toHaveLength(1);
+
+    // Closing the gap again needs no reason.
+    await moveStart(renewal.id, "2027-10-01");
+    expect((await loadPolicyView(renewal.id))!.gaps).toEqual([]);
+  });
+
+  it("cancels the renewal from its first day when the policy is cancelled, unless the broker keeps it", async () => {
+    const { policy, renewal } = await renewed();
+    await payInFull(renewal.id);
+
+    const { preview } = await applyChange(policy.id, { kind: "CANCELLATION", effectiveDate: "2027-04-01" }, brokerId);
+    expect(preview.renewal).toMatchObject({ chosen: "FOLLOW", choices: ["FOLLOW", "KEEP"] });
+    expect(preview.renewal!.follow).toMatchObject([{ action: "CANCEL", netChangeCents: -PREMIUM }]);
+
+    // Everything paid on the renewal is now a credit, ready to refund.
+    expect(await loadPolicyView(renewal.id)).toMatchObject({
+      status: "CANCELLED",
+      cancelledEffective: "2027-10-01",
+      balanceCents: -PREMIUM,
+      gaps: [],
+    });
+  });
+
+  it("keeps the renewal through a cancellation if the broker says so and gives a reason", async () => {
+    const { policy, renewal } = await renewed();
+    await applyChange(
+      policy.id,
+      { kind: "CANCELLATION", effectiveDate: "2027-04-01", renewal: "KEEP", reason: "Seasonal business, back in October" },
+      brokerId,
+    );
+    expect(await loadPolicyView(renewal.id)).toMatchObject({
+      status: "ACTIVE",
+      gaps: [{ side: "BEFORE", from: "2027-04-01", to: "2027-10-01", days: 183 }],
+    });
+
+    // The renewal was left apart on purpose, so a later fix to the cancellation date leaves it alone by default.
+    const cancellation = await db.policyTransaction.findFirstOrThrow({ where: { policyId: policy.id, type: "CANCELLATION" } });
+    const preview = await previewChange(policy.id, {
+      kind: "CORRECTION",
+      transactionId: cancellation.id,
+      event: { type: "CANCELLATION", effectiveDate: "2027-05-01" },
+    });
+    expect(preview.renewal).toMatchObject({ chosen: "KEEP", gapIfKept: { days: 153 } });
+  });
+
+  it("moves a whole chain of renewals together", async () => {
+    const { policy, renewal } = await renewed();
+    const second = await renewPolicy(renewal.id, brokerId);
+
+    const { affected } = await moveStart(policy.id, "2026-09-17");
+    expect(affected).toHaveLength(3);
+    expect(await term(renewal.id)).toEqual(["2027-09-17", "2028-09-17"]);
+    expect(await term(second.id)).toEqual(["2028-09-17", "2029-09-17"]);
+  });
+
+  it("refuses the change, and saves nothing, if the renewal can neither follow nor stay", async () => {
+    const { policy, renewal } = await renewed();
+    // The renewal has a change of its own early in its term.
+    await applyChange(renewal.id, { kind: "COVERAGE_CHANGE", effectiveDate: "2027-10-05", add: ["PROP"], remove: [] }, brokerId);
+
+    // Moving it to Oct 15 would strand that change before the term starts. Leaving it would overlap.
+    await expect(moveStart(policy.id, "2026-10-15")).rejects.toThrow(/can't be moved with it/);
+    expect(await term(policy.id)).toEqual(["2026-10-01", "2027-10-01"]);
+    expect((await loadPolicyView(policy.id))!.history).toHaveLength(1);
+  });
+
+  it("leaves the renewal alone when the policy's dates don't move", async () => {
+    const { policy } = await renewed();
+    const { preview, affected } = await applyChange(
+      policy.id,
+      { kind: "COVERAGE_CHANGE", effectiveDate: "2026-12-01", add: ["PROP"], remove: [] },
+      brokerId,
+    );
+    expect(preview.renewal).toBeNull();
+    expect(affected).toHaveLength(1);
+  });
+});
+
 describe("claims", () => {
   const claim = (policyId: string, coverageCode: string, lossDate: string, claimedCents = 400_000) =>
     fileClaim({ policyId, coverageCode, lossDate, description: "Water damage", claimedCents, userId: brokerId });

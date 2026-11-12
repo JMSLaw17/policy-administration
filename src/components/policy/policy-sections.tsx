@@ -66,6 +66,23 @@ export function PolicySummary({
             </Link>
           </p>
         )}
+        {view.gaps.map((gap) => (
+          <p
+            key={gap.side}
+            className="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900"
+            data-testid="coverage-gap"
+          >
+            <span className="font-medium">
+              No coverage from {formatDate(gap.from)} to {formatDate(gap.to)} ({gap.days}{" "}
+              {gap.days === 1 ? "day" : "days"}).
+            </span>{" "}
+            {gap.side === "AFTER" ? "The renewal " : "This policy starts after "}
+            <Link className="underline" href={`${policyBasePath}/${gap.policyId}`}>
+              {gap.policyNumber}
+            </Link>
+            {gap.side === "AFTER" ? " starts after this policy's coverage ends." : " ends."}
+          </p>
+        ))}
         {view.application && (
           <p className="mt-1 text-sm text-slate-500">
             Application signed by {view.application.signerName} on {dateTime(view.application.signedAt)} through
@@ -338,6 +355,7 @@ export function HistoryCard({
                     </a>
                   )}
                   {entry.type === "CORRECTION" && <Badge tone="indigo">Correction</Badge>}
+                  {entry.type === "NOTE" && <Badge tone="amber">Note</Badge>}
                 </div>
                 <p className="mt-1 text-sm text-slate-700">{entry.summary}</p>
                 {entry.explanation && (

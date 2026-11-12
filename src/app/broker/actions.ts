@@ -153,6 +153,8 @@ export async function withdrawApplicationAction(applicationId: string, customerI
 /* ------------------- Edit coverage, correct, cancel ------------------- */
 
 const reason = z.string().trim().max(500).optional();
+/** What to do with the policy's renewal, if the change moves the end of its cover. */
+const renewal = z.enum(["FOLLOW", "KEEP"]).optional();
 const ChangeSchema: z.ZodType<ChangeRequest> = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("COVERAGE_CHANGE"),
@@ -160,12 +162,14 @@ const ChangeSchema: z.ZodType<ChangeRequest> = z.discriminatedUnion("kind", [
     add: z.array(coverageCode),
     remove: z.array(coverageCode),
     reason,
+    renewal,
   }),
-  z.object({ kind: z.literal("CANCELLATION"), effectiveDate: isoDate, reason }),
+  z.object({ kind: z.literal("CANCELLATION"), effectiveDate: isoDate, reason, renewal }),
   z.object({
     kind: z.literal("CORRECTION"),
     transactionId: z.string().min(1),
     reason,
+    renewal,
     event: z.discriminatedUnion("type", [
       z.object({ type: z.literal("ISSUE"), startDate: isoDate, coverages: z.array(coverageCode) }),
       z.object({
@@ -210,13 +214,21 @@ export async function applyChangeAction(policyId: string, request: unknown): Pro
     throw error;
   }
 
-  // The change is saved. If the customer has a payment form open, bring it
-  // down to the new amount due, and if the change left a credit, send it back
-  // to the card.
-  await syncOpenPayments(policyId);
-  const notice = await settleCredit(policyId, result.transaction.id);
-  revalidatePolicy(policyId);
-  return { ok: true, preview: result.preview, notice };
+  // The change is saved, on this policy and on any renewal that moved with it.
+  // For each: if the customer has a payment form open, bring it down to the
+  // new amount due, and if the change left a credit, send it back to the card.
+  const notices: string[] = [];
+  for (const affected of result.affected) {
+    await syncOpenPayments(affected.policyId);
+    const notice = await settleCredit(affected.policyId, affected.transactionId);
+    if (notice) notices.push(notice);
+    revalidatePolicy(affected.policyId);
+  }
+  // A gap is also noted on the policy at its other end, which wasn't otherwise changed.
+  const { renewal: next, gapAfterOriginal } = result.preview;
+  if (next) revalidatePolicy(next.policyId);
+  if (gapAfterOriginal) revalidatePolicy(gapAfterOriginal.policyId);
+  return { ok: true, preview: result.preview, notice: notices.join(" ") || undefined };
 }
 
 /** Lets the broker re-send a refund that failed. */

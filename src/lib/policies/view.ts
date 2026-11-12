@@ -2,6 +2,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import {
   coverageName,
+  daysBetween,
   formatDate,
   formatUSD,
   fromJSDate,
@@ -43,7 +44,7 @@ export type StatementRow = {
 export type HistoryEntry = {
   id: string;
   seq: number;
-  type: "ISSUE" | "COVERAGE_CHANGE" | "CORRECTION" | "CANCELLATION" | "DETAILS_CHANGE";
+  type: "ISSUE" | "COVERAGE_CHANGE" | "CORRECTION" | "CANCELLATION" | "DETAILS_CHANGE" | "NOTE";
   title: string;
   summary: string;
   effectiveDate: ISODate;
@@ -61,6 +62,19 @@ export type HistoryEntry = {
   correctable: PolicyEvent | null;
 };
 
+/** Days with no cover between this policy and the one before or after it. */
+export type CoverageGap = {
+  /** Where the other policy sits: the one this renews (BEFORE) or its renewal (AFTER). */
+  side: "BEFORE" | "AFTER";
+  policyId: string;
+  policyNumber: string;
+  from: ISODate;
+  to: ISODate;
+  days: number;
+};
+
+const linkedPolicy = { id: true, policyNumber: true, startDate: true, endDate: true, cancelledEffective: true } as const;
+
 export type PolicyView = Awaited<ReturnType<typeof loadPolicyView>>;
 
 export async function loadPolicyView(policyId: string) {
@@ -73,8 +87,8 @@ export async function loadPolicyView(policyId: string) {
       payments: { orderBy: { createdAt: "asc" } },
       refunds: { orderBy: { createdAt: "asc" } },
       application: true,
-      renewedFrom: { select: { id: true, policyNumber: true } },
-      renewal: { select: { id: true, policyNumber: true } },
+      renewedFrom: { select: linkedPolicy },
+      renewal: { select: linkedPolicy },
     },
   });
   if (!policy) return null;
@@ -135,6 +149,10 @@ export async function loadPolicyView(policyId: string) {
       summary = summarise(event);
     } else if (t.type === "DETAILS_CHANGE") {
       summary = describeDetails(t.data);
+    } else if (t.type === "NOTE") {
+      const note = t.data as { title?: string; note?: string } | null;
+      title = note?.title ?? "Note";
+      summary = note?.note ?? "";
     }
 
     return {
@@ -158,6 +176,40 @@ export async function loadPolicyView(policyId: string) {
   });
 
   const balanceCents = running;
+
+  // Gaps between this policy and the one it renews, or its renewal. A policy
+  // cancelled from its first day covers nothing, so there's nothing to be apart from.
+  const coverEnd = state.cancelledEffective ?? state.endDate;
+  const gaps: CoverageGap[] = [];
+  const earlier = policy.renewedFrom;
+  if (earlier && state.startDate < coverEnd) {
+    const earlierEnd = fromJSDate(earlier.cancelledEffective ?? earlier.endDate);
+    if (earlierEnd < state.startDate) {
+      gaps.push({
+        side: "BEFORE",
+        policyId: earlier.id,
+        policyNumber: earlier.policyNumber,
+        from: earlierEnd,
+        to: state.startDate,
+        days: daysBetween(earlierEnd, state.startDate),
+      });
+    }
+  }
+  const later = policy.renewal;
+  if (later) {
+    const laterStart = fromJSDate(later.startDate);
+    const laterEnd = fromJSDate(later.cancelledEffective ?? later.endDate);
+    if (laterStart < laterEnd && coverEnd < laterStart) {
+      gaps.push({
+        side: "AFTER",
+        policyId: later.id,
+        policyNumber: later.policyNumber,
+        from: coverEnd,
+        to: laterStart,
+        days: daysBetween(coverEnd, laterStart),
+      });
+    }
+  }
 
   return {
     id: policy.id,
@@ -185,8 +237,9 @@ export async function loadPolicyView(policyId: string) {
     // Premium falls due when the term starts. Until then it can be paid early
     // but isn't overdue. This matters for renewals, which are created ahead of time.
     dueDate: state.startDate > todayISO() ? state.startDate : null,
-    renewedFrom: policy.renewedFrom,
-    renewal: policy.renewal,
+    renewedFrom: policy.renewedFrom && { id: policy.renewedFrom.id, policyNumber: policy.renewedFrom.policyNumber },
+    renewal: policy.renewal && { id: policy.renewal.id, policyNumber: policy.renewal.policyNumber },
+    gaps,
     coverage: state.intervals,
     statement,
     history,

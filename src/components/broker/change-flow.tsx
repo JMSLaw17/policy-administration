@@ -3,9 +3,16 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { applyChangeAction, previewChangeAction } from "@/app/broker/actions";
-import { dangerButton, primaryButton, secondaryButton } from "@/components/ui";
-import { formatUSD, formulaFor, periodFor, signedUSD } from "@/lib/engine";
-import type { ChangePreview, ChangeRequest, PlannedLine } from "@/lib/policies/service";
+import { dangerButton, inputClass, primaryButton, secondaryButton } from "@/components/ui";
+import { formatDate, formatUSD, formulaFor, periodFor, signedUSD } from "@/lib/engine";
+import type {
+  ChangePreview,
+  ChangeRequest,
+  FollowStep,
+  Gap,
+  PlannedLine,
+  RenewalChoice,
+} from "@/lib/policies/service";
 
 /**
  * The two-step flow every money-affecting broker action uses:
@@ -57,25 +64,38 @@ export function useChangeFlow(policyId: string) {
       }
     });
 
-  return { pending, preview, error, done, notice, runPreview, confirm, reset };
+  /** Switches what happens to the renewal, and recalculates the preview for that choice. */
+  const chooseRenewal = (choice: RenewalChoice) => {
+    if (request) runPreview({ ...request, renewal: choice });
+  };
+
+  /** The reason can still be typed after the preview, because a gap can only be saved with one. */
+  const setReason = (reason: string) => setRequest((r) => (r ? { ...r, reason } : r));
+
+  return { pending, preview, request, error, done, notice, runPreview, confirm, reset, chooseRenewal, setReason };
 }
 
+export type ChangeFlow = ReturnType<typeof useChangeFlow>;
+
 export function PreviewPanel({
+  flow,
   preview,
-  pending,
   onConfirm,
   onBack,
   confirmLabel,
   danger,
 }: {
+  flow: ChangeFlow;
   preview: ChangePreview;
-  pending: boolean;
   onConfirm: () => void;
   onBack: () => void;
   confirmLabel: string;
   danger?: boolean;
 }) {
+  const { pending } = flow;
   const after = preview.balanceAfterCents;
+  const reason = flow.request?.reason ?? "";
+  const missingReason = preview.reasonRequired && !reason.trim();
   return (
     <div className="mt-4 rounded-md border border-indigo-200 bg-indigo-50/50 p-4" data-testid="preview">
       <h3 className="text-sm font-semibold text-slate-900">What this will do to the statement</h3>
@@ -106,8 +126,40 @@ export function PreviewPanel({
           {formatUSD(Math.abs(after))}
         </dd>
       </dl>
+      {preview.renewal && (
+        <RenewalSection
+          effect={preview.renewal}
+          cancelling={flow.request?.kind === "CANCELLATION" || preview.renewal.follow[0]?.action === "CANCEL"}
+          pending={pending}
+          onChoose={flow.chooseRenewal}
+        />
+      )}
+      {preview.gapAfterOriginal && (
+        <GapWarning gap={preview.gapAfterOriginal}>
+          This policy would start after {preview.gapAfterOriginal.policyNumber}, the policy it renews, has ended.
+        </GapWarning>
+      )}
+      {preview.reasonRequired && (
+        <label className="mt-3 block">
+          <span className="text-sm font-medium text-slate-700">
+            Reason for leaving days without coverage (required)
+          </span>
+          <input
+            name="gapReason"
+            value={reason}
+            onChange={(e) => flow.setReason(e.target.value)}
+            placeholder="e.g. The customer let coverage lapse and came back two weeks later"
+            className={inputClass}
+          />
+        </label>
+      )}
       <div className="mt-4 flex gap-2">
-        <button type="button" disabled={pending} onClick={onConfirm} className={danger ? dangerButton : primaryButton}>
+        <button
+          type="button"
+          disabled={pending || missingReason}
+          onClick={onConfirm}
+          className={danger ? dangerButton : primaryButton}
+        >
           {pending ? "Saving…" : confirmLabel}
         </button>
         <button type="button" disabled={pending} onClick={onBack} className={secondaryButton}>
@@ -115,6 +167,104 @@ export function PreviewPanel({
         </button>
       </div>
     </div>
+  );
+}
+
+/** What happens to the policy's renewal, and the broker's choice about it. */
+function RenewalSection({
+  effect,
+  cancelling,
+  pending,
+  onChoose,
+}: {
+  effect: NonNullable<ChangePreview["renewal"]>;
+  cancelling: boolean;
+  pending: boolean;
+  onChoose: (choice: RenewalChoice) => void;
+}) {
+  const canFollow = effect.choices.includes("FOLLOW");
+  const canKeep = effect.choices.includes("KEEP");
+  return (
+    <div className="mt-4 rounded-md border border-slate-200 bg-white p-3" data-testid="renewal-effect">
+      <h4 className="text-sm font-semibold text-slate-900">This policy has been renewed as {effect.policyNumber}</h4>
+      <p className="mt-0.5 text-xs text-slate-500">
+        A renewal starts the day the policy before it ends. The two can never cover the same days.
+      </p>
+      <fieldset className="mt-2 space-y-2" disabled={pending}>
+        <label className={`flex items-start gap-2 text-sm ${canFollow ? "" : "text-slate-400"}`}>
+          <input
+            type="radio"
+            name="renewalChoice"
+            value="FOLLOW"
+            className="mt-1"
+            checked={effect.chosen === "FOLLOW"}
+            disabled={!canFollow}
+            onChange={() => onChoose("FOLLOW")}
+          />
+          <span>
+            <span className="font-medium">{cancelling ? "Cancel the renewal too" : "Move the renewal too"}</span>
+            {canFollow ? (
+              effect.follow.map((step) => <FollowLine key={step.policyId} step={step} />)
+            ) : (
+              <span className="block text-xs">Not possible: {effect.followBlocked}</span>
+            )}
+          </span>
+        </label>
+        <label className={`flex items-start gap-2 text-sm ${canKeep ? "" : "text-slate-400"}`}>
+          <input
+            type="radio"
+            name="renewalChoice"
+            value="KEEP"
+            className="mt-1"
+            checked={effect.chosen === "KEEP"}
+            disabled={!canKeep}
+            onChange={() => onChoose("KEEP")}
+          />
+          <span>
+            <span className="font-medium">Leave the renewal where it is</span>
+            <span className="block text-xs">
+              {effect.gapIfKept
+                ? `Leaves no coverage from ${formatDate(effect.gapIfKept.from)} to ${formatDate(effect.gapIfKept.to)} (${days(effect.gapIfKept)}). Needs a reason.`
+                : "Not possible: the two policies would cover the same days."}
+            </span>
+          </span>
+        </label>
+      </fieldset>
+      {effect.chosen === "KEEP" && effect.gapIfKept && (
+        <GapWarning gap={effect.gapIfKept}>The renewal {effect.policyNumber} would start after this policy ends.</GapWarning>
+      )}
+    </div>
+  );
+}
+
+/** One renewal that follows the change: what happens to it and to its balance. */
+function FollowLine({ step }: { step: FollowStep }) {
+  const after = step.balanceAfterCents;
+  return (
+    <span className="block text-xs text-slate-600" data-testid="renewal-follow">
+      {step.policyNumber}: {step.summary}{" "}
+      {step.netChangeCents === 0
+        ? "Its premium doesn't change."
+        : `Its premium changes by ${signedUSD(step.netChangeCents)}.`}{" "}
+      {after > 0
+        ? `${formatUSD(after)} will be due on it.`
+        : after < 0
+          ? `${formatUSD(-after)} will be refunded to the customer.`
+          : "Nothing will be due on it."}
+    </span>
+  );
+}
+
+const days = (gap: Gap) => `${gap.days} ${gap.days === 1 ? "day" : "days"}`;
+
+function GapWarning({ gap, children }: { gap: Gap; children: React.ReactNode }) {
+  return (
+    <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert" data-testid="gap-warning">
+      <span className="font-medium">
+        No coverage from {formatDate(gap.from)} to {formatDate(gap.to)} ({days(gap)}).
+      </span>{" "}
+      {children} A loss in that time would not be covered.
+    </p>
   );
 }
 
