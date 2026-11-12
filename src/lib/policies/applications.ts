@@ -19,7 +19,7 @@ import {
   getEnvelopeStatus,
   voidEnvelope,
 } from "@/lib/integrations/docusign";
-import { issuePolicy } from "./service";
+import { issuePolicyIn } from "./service";
 
 /**
  * The application step: before a policy is issued, the policyholder e-signs an
@@ -158,14 +158,26 @@ export async function issueFromApplication(applicationId: string, userId: string
   if (application.status !== "SIGNED") {
     throw new PolicyRuleError("The policyholder hasn't signed this application yet.");
   }
-  const policy = await issuePolicy({
-    customerId: application.customerId,
-    startDate: fromJSDate(application.startDate),
-    coverageCodes: application.coverageCodes,
-    userId,
+  // The application is claimed and the policy created in one transaction. The
+  // claim only succeeds for an application that is still SIGNED, and it locks
+  // the row, so two brokers clicking at once (or a retry after a failure)
+  // can't both issue: the second waits, then finds it already issued. If
+  // creating the policy fails, the claim is undone with it.
+  return db.$transaction(async (tx) => {
+    const claimed = await tx.application.updateMany({
+      where: { id: application.id, status: "SIGNED" },
+      data: { status: "ISSUED" },
+    });
+    if (claimed.count !== 1) throw new PolicyRuleError("This application has already been issued.");
+    const policy = await issuePolicyIn(tx, {
+      customerId: application.customerId,
+      startDate: fromJSDate(application.startDate),
+      coverageCodes: application.coverageCodes,
+      userId,
+    });
+    await tx.application.update({ where: { id: application.id }, data: { policyId: policy.id } });
+    return policy;
   });
-  await db.application.update({ where: { id: application.id }, data: { status: "ISSUED", policyId: policy.id } });
-  return policy;
 }
 
 export async function withdrawApplication(applicationId: string) {

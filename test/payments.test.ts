@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type Stripe from "stripe";
 import { db } from "@/lib/db";
-import { recordPaymentIntent, syncOpenPayments } from "@/lib/policies/payments";
+import { reconcilePending, recordPaymentIntent, refundCredit, startPayment, syncOpenPayments } from "@/lib/policies/payments";
 import { applyChange, issuePolicy } from "@/lib/policies/service";
 import { loadPolicyView } from "@/lib/policies/view";
 
@@ -13,29 +13,66 @@ import { loadPolicyView } from "@/lib/policies/view";
 
 type FakeIntent = { id: string; status: string; amount: number; amount_received: number };
 
+type FakeRefund = { id: string; status: string; amount: number; payment_intent: string; metadata: Record<string, string> };
+
 const fake = vi.hoisted(() => ({
   intents: new Map<string, { id: string; status: string; amount: number; amount_received: number }>(),
-  refunds: [] as { id: string; amount: number; payment_intent: string }[],
+  refunds: [] as { id: string; status: string; amount: number; payment_intent: string; metadata: Record<string, string> }[],
+  /** What Stripe remembers for each idempotency key, as the real one does for 24 hours. */
+  byKey: new Map<string, unknown>(),
+  /**
+   * How the next refund request goes wrong, if at all:
+   *  - "lost": Stripe makes the refund, but the answer never reaches us.
+   *  - "rejected": Stripe refuses, and makes nothing.
+   */
+  refundFault: null as null | "lost" | "rejected",
 }));
 
-vi.mock("@/lib/integrations/stripe", () => ({
-  StripeNotConfiguredError: class StripeNotConfiguredError extends Error {},
-  isStripeConfigured: () => true,
-  stripe: () => ({
-    paymentIntents: {
-      retrieve: async (id: string) => fake.intents.get(id)!,
-      update: async (id: string, data: { amount: number }) => Object.assign(fake.intents.get(id)!, data),
-      cancel: async (id: string) => Object.assign(fake.intents.get(id)!, { status: "canceled" }),
-    },
-    refunds: {
-      create: async (data: { amount: number; payment_intent: string; metadata: Record<string, string> }) => {
-        const refund = { id: `re_${fake.refunds.length + 1}`, status: "succeeded", ...data };
-        fake.refunds.push(refund);
-        return refund;
+vi.mock("@/lib/integrations/stripe", async () => {
+  const { default: Stripe } = await vi.importActual<typeof import("stripe")>("stripe");
+  return {
+    StripeNotConfiguredError: class StripeNotConfiguredError extends Error {},
+    isStripeConfigured: () => true,
+    stripe: () => ({
+      paymentIntents: {
+        create: async (data: { amount: number }, options: { idempotencyKey: string }) => {
+          const seen = fake.byKey.get(options.idempotencyKey);
+          if (seen) return seen;
+          const id = `pi_${fake.intents.size + 1}`;
+          const intent = { id, status: "requires_payment_method", amount: data.amount, amount_received: 0, client_secret: `${id}_secret` };
+          fake.intents.set(id, intent);
+          fake.byKey.set(options.idempotencyKey, intent);
+          return intent;
+        },
+        retrieve: async (id: string) => fake.intents.get(id)!,
+        update: async (id: string, data: { amount: number }) => Object.assign(fake.intents.get(id)!, data),
+        cancel: async (id: string) => Object.assign(fake.intents.get(id)!, { status: "canceled" }),
       },
-    },
-  }),
-}));
+      refunds: {
+        create: async (data: Omit<FakeRefund, "id" | "status">, options: { idempotencyKey: string }) => {
+          const seen = fake.byKey.get(options.idempotencyKey);
+          if (seen) return seen;
+          const fault = fake.refundFault;
+          fake.refundFault = null;
+          if (fault === "rejected") {
+            throw new Stripe.errors.StripeInvalidRequestError({ type: "invalid_request_error", message: "This payment can't be refunded." });
+          }
+          const refund = { id: `re_${fake.refunds.length + 1}`, status: "succeeded", ...data };
+          fake.refunds.push(refund);
+          fake.byKey.set(options.idempotencyKey, refund);
+          if (fault === "lost") {
+            throw new Stripe.errors.StripeConnectionError({ type: "api_error", message: "The connection to Stripe was lost." });
+          }
+          return refund;
+        },
+        list: async (query: { payment_intent: string }) => ({
+          data: fake.refunds.filter((r) => r.payment_intent === query.payment_intent),
+        }),
+        retrieve: async (id: string) => fake.refunds.find((r) => r.id === id)!,
+      },
+    }),
+  };
+});
 
 let brokerId: string;
 let customerId: string;
@@ -68,6 +105,8 @@ beforeEach(async () => {
   );
   fake.intents.clear();
   fake.refunds.length = 0;
+  fake.byKey.clear();
+  fake.refundFault = null;
 });
 
 const GL = 109_500; // General Liability for a full term
@@ -220,5 +259,122 @@ describe("a payment form left open while the broker changes the policy", () => {
 
     expect(intent.status).toBe("canceled");
     expect((await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).status).toBe("FAILED");
+  });
+});
+
+describe("starting a payment", () => {
+  it("gives two checkouts opened at the same moment one attempt and one Stripe payment", async () => {
+    const { policyId } = await policyWithCyber();
+    const [first, second] = await Promise.all([startPayment(policyId), startPayment(policyId)]);
+
+    expect(first).toEqual({ clientSecret: "pi_1_secret", amountCents: GL + CYBER_FROM_OCT_25 });
+    expect(second).toEqual(first);
+    expect(fake.intents.size).toBe(1);
+    expect(await db.payment.count({ where: { policyId } })).toBe(1);
+
+    // Opening the form again later still reuses it, and one payment settles the policy.
+    expect(await startPayment(policyId)).toEqual(first);
+    await stripeConfirms(fake.intents.get("pi_1")!);
+    expect(await balance(policyId)).toBe(0);
+    expect(await db.payment.count({ where: { policyId } })).toBe(1);
+  });
+
+  it("picks up an attempt that was reserved but never reached Stripe", async () => {
+    const { policyId } = await policyWithCyber();
+    // The process stopped between reserving the attempt and asking Stripe for it.
+    const reserved = await db.payment.create({ data: { policyId, amountCents: GL + CYBER_FROM_OCT_25 } });
+
+    const started = await startPayment(policyId);
+    expect(started.amountCents).toBe(GL + CYBER_FROM_OCT_25);
+    expect(await db.payment.findMany({ where: { policyId } })).toMatchObject([
+      { id: reserved.id, status: "INITIATED", stripePaymentIntentId: "pi_1" },
+    ]);
+  });
+
+  it("returns the amount Stripe will collect, which is the amount due now", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    expect((await startPayment(policyId)).amountCents).toBe(GL + CYBER_FROM_OCT_25);
+    // More becomes due while the form is closed. Opening it again gives the new amount.
+    await moveCyberTo(policyId, cyberChangeId, "2026-10-18");
+    const reopened = await startPayment(policyId);
+    expect(reopened.amountCents).toBe(GL + CYBER_FROM_OCT_25 + WEEK_OF_CYBER);
+    expect(fake.intents.get("pi_1")!.amount).toBe(reopened.amountCents);
+  });
+});
+
+describe("a refund that is interrupted", () => {
+  /** A paid-up policy that is then owed a week of Cyber back. */
+  async function policyOwedARefund() {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    expect(await balance(policyId)).toBe(-WEEK_OF_CYBER);
+    return policyId;
+  }
+  const refundRows = (policyId: string) =>
+    db.refund.findMany({ where: { policyId }, orderBy: { createdAt: "asc" }, select: { status: true, stripeRefundId: true, amountCents: true } });
+
+  it("is not sent twice when Stripe made the refund but its answer was lost", async () => {
+    const policyId = await policyOwedARefund();
+    fake.refundFault = "lost";
+    const first = await refundCredit(policyId);
+    expect(first.message).toMatch(/couldn't be confirmed with Stripe yet/);
+
+    // Stripe has the refund. We don't know that yet, so the row waits, still holding the credit.
+    expect(fake.refunds).toHaveLength(1);
+    expect(await refundRows(policyId)).toEqual([{ status: "PENDING", stripeRefundId: null, amountCents: WEEK_OF_CYBER }]);
+
+    // Retrying resumes the same refund. Stripe is not asked for a second one.
+    expect(await refundCredit(policyId)).toMatchObject({ refundedCents: WEEK_OF_CYBER });
+    expect(fake.refunds).toHaveLength(1);
+    expect(await refundRows(policyId)).toEqual([{ status: "SUCCEEDED", stripeRefundId: "re_1", amountCents: WEEK_OF_CYBER }]);
+    expect(await balance(policyId)).toBe(0);
+
+    // And once more changes nothing.
+    expect(await refundCredit(policyId)).toMatchObject({ refundedCents: 0 });
+    expect(fake.refunds).toHaveLength(1);
+  });
+
+  it("is found again after Stripe has forgotten the idempotency key", async () => {
+    const policyId = await policyOwedARefund();
+    fake.refundFault = "lost";
+    await refundCredit(policyId);
+    fake.byKey.clear(); // more than 24 hours pass
+
+    // Opening the policy checks with Stripe, which already has the refund under our reference.
+    await reconcilePending(policyId);
+    expect(fake.refunds).toHaveLength(1);
+    expect(await refundRows(policyId)).toEqual([{ status: "SUCCEEDED", stripeRefundId: "re_1", amountCents: WEEK_OF_CYBER }]);
+    expect(await balance(policyId)).toBe(0);
+  });
+
+  it("is sent when the app stopped before Stripe was asked", async () => {
+    const policyId = await policyOwedARefund();
+    // The refund was decided and saved, and then the process stopped.
+    const payment = await db.payment.findFirstOrThrow({ where: { policyId, status: "SUCCEEDED" } });
+    await db.refund.create({ data: { policyId, paymentId: payment.id, amountCents: WEEK_OF_CYBER, status: "PENDING" } });
+
+    // It holds the credit, so a new refund isn't planned on top of it...
+    // ...and opening the policy sends it, once.
+    await reconcilePending(policyId);
+    await reconcilePending(policyId);
+    expect(fake.refunds).toMatchObject([{ amount: WEEK_OF_CYBER }]);
+    expect(await refundRows(policyId)).toEqual([{ status: "SUCCEEDED", stripeRefundId: "re_1", amountCents: WEEK_OF_CYBER }]);
+    expect(await balance(policyId)).toBe(0);
+  });
+
+  it("is marked failed when Stripe clearly refuses, and a retry sends a new one", async () => {
+    const policyId = await policyOwedARefund();
+    fake.refundFault = "rejected";
+    expect((await refundCredit(policyId)).message).toMatch(/failed: This payment can't be refunded/);
+    expect(fake.refunds).toHaveLength(0);
+    expect(await refundRows(policyId)).toMatchObject([{ status: "FAILED", stripeRefundId: null }]);
+    expect(await balance(policyId)).toBe(-WEEK_OF_CYBER);
+
+    expect(await refundCredit(policyId)).toMatchObject({ refundedCents: WEEK_OF_CYBER });
+    expect(fake.refunds).toHaveLength(1);
+    expect((await refundRows(policyId)).map((r) => r.status)).toEqual(["FAILED", "SUCCEEDED"]);
+    expect(await balance(policyId)).toBe(0);
   });
 });

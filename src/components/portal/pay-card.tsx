@@ -37,7 +37,9 @@ export function PayCard({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
+  // The payment Stripe is holding for this policy, and the amount it will collect.
+  const [checkout, setCheckout] = useState<{ clientSecret: string; amountCents: number; quotedCents: number } | null>(null);
+  const clientSecret = checkout?.clientSecret ?? null;
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
 
@@ -57,12 +59,15 @@ export function PayCard({
     startTransition(async () => {
       setError(null);
       const result = await startPaymentAction(policyId);
-      if (result.ok) setClientSecret(result.clientSecret);
-      else setError(result.error);
+      if (!result.ok) return setError(result.error);
+      // The amount comes from the server, not from this page, which may have been open a while.
+      // `quotedCents` is what the button the customer just pressed said.
+      setCheckout({ clientSecret: result.clientSecret, amountCents: result.amountCents, quotedCents: amountDueCents });
+      if (result.amountCents !== amountDueCents) router.refresh();
     });
 
   const finished = async () => {
-    setClientSecret(null);
+    setCheckout(null);
     setProcessing(true);
     await refreshPaymentsAction(policyId);
     router.refresh();
@@ -120,13 +125,15 @@ export function PayCard({
             {error}
           </p>
         )}
-        {clientSecret && stripePromise && (
-          <Elements stripe={stripePromise} options={{ clientSecret }}>
+        {checkout && stripePromise && (
+          <Elements stripe={stripePromise} options={{ clientSecret: checkout.clientSecret }}>
             <PaymentForm
               policyId={policyId}
-              amountCents={amountDueCents}
+              clientSecret={checkout.clientSecret}
+              amountCents={checkout.amountCents}
+              quotedCents={checkout.quotedCents}
               onDone={finished}
-              onCancel={() => setClientSecret(null)}
+              onCancel={() => setCheckout(null)}
             />
           </Elements>
         )}
@@ -139,27 +146,57 @@ export function PayCard({
   );
 }
 
+/**
+ * Stripe's form and the Pay button. The button always shows the amount held
+ * on the Stripe payment itself, which is what will be collected. If that
+ * differs from the amount the customer was last shown, they are told, and
+ * have to tick a box agreeing to the new amount before they can pay.
+ */
 function PaymentForm({
   policyId,
+  clientSecret,
   amountCents,
+  quotedCents,
   onDone,
   onCancel,
 }: {
   policyId: string;
+  clientSecret: string;
+  /** The amount on the Stripe payment when the form was opened. */
   amountCents: number;
+  /** The amount on the button the customer pressed to open the form. */
+  quotedCents: number;
   onDone: () => void;
   onCancel: () => void;
 }) {
   const stripe = useStripe();
   const elements = useElements();
+  const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // `amount` is what Stripe will collect. `shown` is the last amount the customer saw and accepted.
+  const [amount, setAmount] = useState(amountCents);
+  const [shown, setShown] = useState(quotedCents);
+  const [agreed, setAgreed] = useState(false);
+  const changed = amount !== shown;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!stripe || !elements) return;
     setSubmitting(true);
     setError(null);
+    // The amount can be lowered while this form is open, after a broker's change.
+    // Ask Stripe what it holds now, and never charge an amount that wasn't on the button.
+    const current = await stripe.retrievePaymentIntent(clientSecret);
+    if (current.paymentIntent && current.paymentIntent.amount !== amount) {
+      await elements.fetchUpdates();
+      setShown(amount);
+      setAmount(current.paymentIntent.amount);
+      setAgreed(false);
+      setSubmitting(false);
+      router.refresh();
+      return;
+    }
     const result = await stripe.confirmPayment({
       elements,
       confirmParams: { return_url: `${window.location.origin}/portal/policies/${policyId}` },
@@ -179,14 +216,27 @@ function PaymentForm({
     <form onSubmit={submit} className="max-w-md">
       {/* Link is Stripe's saved-details wallet. Off, so the form offers only card and bank account. */}
       <PaymentElement options={{ wallets: { link: "never" } }} />
+      {changed && (
+        <div className="mt-3 rounded-md bg-amber-50 px-3 py-2.5 text-sm text-amber-900" role="alert" data-testid="amount-changed">
+          <p>
+            <span className="font-medium">The amount due has changed.</span> It was {formatUSD(shown)} and is now{" "}
+            {formatUSD(amount)}, because your policy was changed while this page was open. The reason is shown above
+            and in your policy history.
+          </p>
+          <label className="mt-2 flex items-center gap-2 font-medium">
+            <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} disabled={submitting} />
+            Pay the new amount, {formatUSD(amount)}
+          </label>
+        </div>
+      )}
       {error && (
         <p role="alert" className="mt-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700" data-testid="payment-error">
           {error}
         </p>
       )}
       <div className="mt-4 flex gap-2">
-        <button type="submit" disabled={!stripe || submitting} className={primaryButton}>
-          <ButtonLabel pending={submitting}>{`Pay ${formatUSD(amountCents)}`}</ButtonLabel>
+        <button type="submit" disabled={!stripe || submitting || (changed && !agreed)} className={primaryButton}>
+          <ButtonLabel pending={submitting}>{`Pay ${formatUSD(amount)}`}</ButtonLabel>
         </button>
         <button type="button" onClick={onCancel} disabled={submitting} className={secondaryButton}>
           Cancel

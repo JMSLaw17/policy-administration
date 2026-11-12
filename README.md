@@ -80,6 +80,12 @@ These rules live in `src/lib/engine` (pure functions, no database) and are used 
 6. **Balance = charges − payments + refunds.** Positive is the amount due. Negative is a credit, which first absorbs anything else owed and is then refunded to the card.
 7. **Stripe decides what was paid.** A payment or refund reaches the statement only when Stripe's servers confirm it, by webhook or by a direct status check. Hearing about it twice posts one line.
 8. **Cancellation is pro-rata with no penalty.** Refund = paid − earned.
+9. **Nothing is charged, refunded, or issued twice, and nothing is saved that wasn't shown.**
+   - A policy has one open payment attempt, so two checkout tabs share one Stripe payment.
+   - A refund is saved before Stripe is contacted and resumed with the same key until its outcome is known, so an interruption can neither strand a credit nor refund it twice.
+   - A signed application issues exactly one policy.
+   - The Pay button shows the amount Stripe holds, and asks the customer to agree if it has changed since they last saw it.
+   - A broker's confirmation is refused, and the new figures shown, if a payment or another change landed after the preview.
 
 ## Integrations: what is live and what is simulated
 
@@ -127,8 +133,8 @@ Each of these is recorded with its reasoning in [DECISIONS.md](DECISIONS.md).
 | Command | What it covers |
 |---|---|
 | `npm run check` | Typecheck, lint, and `npm test`: the money rules, the whole workflow against a local test database (including the scenario above), and the payment rules with a stand-in for Stripe. |
-| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, and the demo scenario. |
-| `npm run test:e2e` | A real browser (Playwright) running the scenario end to end, typing test cards into Stripe's own card form. |
+| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, two checkouts at once, a refund resumed after an interruption, and the demo scenario. |
+| `npm run test:e2e` | A real browser (Playwright) running the scenario end to end, typing test cards into Stripe's own card form. Also covers the amount changing while the pay form is open, and a payment landing between a broker's preview and confirmation. |
 | `npm run smoke` | Signs in to the deployed site as each role and opens the main pages. Read-only. |
 | `npm run test:deployed` | Refunds and claims in a browser against the deployed site. Changes data. |
 | `npm run prod:query` | A read-only summary of the deployed database, for confirming results. |

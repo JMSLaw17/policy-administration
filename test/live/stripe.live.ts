@@ -6,6 +6,7 @@ import { stripe } from "@/lib/integrations/stripe";
 import {
   balanceCents,
   PaymentError,
+  reconcilePending,
   recordPaymentIntent,
   refundCredit,
   startPayment,
@@ -115,6 +116,54 @@ describe("Stripe test mode, end to end", () => {
     await Promise.all([recordPaymentIntent(intent), recordPaymentIntent(intent), recordPaymentIntent(intent)]);
     expect((await view(policy.id)).statement.filter((r) => r.kind === "PAYMENT")).toHaveLength(1);
     expect(await balanceCents(policy.id)).toBe(0);
+  });
+
+  it("shares one Stripe payment between two checkouts opened at the same moment", async () => {
+    const policy = await issuePolicy({ customerId, startDate: "2026-10-01", coverageCodes: ["GL"], userId: brokerId });
+    const started = await Promise.allSettled([startPayment(policy.id), startPayment(policy.id)]);
+
+    // Stripe may turn away the second request while the first is still in flight. Either way,
+    // there is one attempt and one PaymentIntent, and whoever got an answer got the same one.
+    const secrets = started.flatMap((r) => (r.status === "fulfilled" ? [r.value.clientSecret] : []));
+    expect(secrets.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(secrets).size).toBe(1);
+    expect(await db.payment.count({ where: { policyId: policy.id } })).toBe(1);
+
+    // Paying uses that same attempt, and the policy is settled by one payment.
+    const { intentId } = await payWith(policy.id, VISA);
+    expect(secrets[0].startsWith(intentId)).toBe(true);
+    const v = await view(policy.id);
+    expect(v.balanceCents).toBe(0);
+    expect(v.payments.map((p) => p.status)).toEqual(["SUCCEEDED"]);
+  });
+
+  it("resumes a refund Stripe made but the app never heard about, without sending it twice", async () => {
+    const policy = await issuePolicy({ customerId, startDate: "2026-10-01", coverageCodes: ["GL"], userId: brokerId });
+    const { intentId } = await payWith(policy.id, VISA);
+    const cancel = await applyChange(policy.id, { kind: "CANCELLATION", effectiveDate: "2027-04-01" }, brokerId);
+    expect(await balanceCents(policy.id)).toBe(-54_900);
+
+    // What an interruption leaves behind: our refund row, saved before Stripe was called, and
+    // the refund itself at Stripe, made under that row's key. The row never got Stripe's id.
+    const payment = await db.payment.findFirstOrThrow({ where: { policyId: policy.id, status: "SUCCEEDED" } });
+    const row = await db.refund.create({
+      data: { policyId: policy.id, paymentId: payment.id, amountCents: 54_900, status: "PENDING", transactionId: cancel.transaction.id },
+    });
+    const made = await stripe().refunds.create(
+      { payment_intent: intentId, amount: 54_900, reason: "requested_by_customer", metadata: { refundId: row.id, policyId: policy.id } },
+      { idempotencyKey: `refund-${row.id}` },
+    );
+
+    // Opening the policy finds Stripe's refund and records it. No second refund is created.
+    await reconcilePending(policy.id);
+    expect(await refundCredit(policy.id)).toMatchObject({ refundedCents: 0 });
+    const atStripe = await stripe().refunds.list({ payment_intent: intentId, limit: 100 });
+    expect(atStripe.data.map((r) => [r.id, r.amount])).toEqual([[made.id, 54_900]]);
+
+    const v = await view(policy.id);
+    expect(v.balanceCents).toBe(0);
+    expect(v.refunds).toMatchObject([{ id: row.id, status: "SUCCEEDED", amountCents: 54_900, stripeRefundId: made.id }]);
+    expect(v.statement.at(-1)).toMatchObject({ kind: "REFUND", amountCents: 54_900 });
   });
 
   it("refunds a correction's credit, then a cancellation's, back to the cards", async () => {

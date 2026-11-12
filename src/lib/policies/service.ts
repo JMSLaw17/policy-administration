@@ -77,7 +77,35 @@ export type ChangePreview = StatementEffect & {
   gapAfterOriginal: (Gap & { policyId: string; policyNumber: string }) | null;
   /** True when the action, as chosen, leaves a gap. A gap can only be saved with a reason. */
   reasonRequired: boolean;
+  /**
+   * The money this action moves, as one string. The broker's confirmation
+   * sends it back, and the change is only saved if it still matches.
+   */
+  fingerprint: string;
 };
+
+/** Thrown when the figures the broker previewed are no longer what the action would do. */
+export class PreviewChangedError extends Error {
+  constructor(public preview: ChangePreview) {
+    super(
+      "The figures have changed since you previewed this, because something else happened on the policy in the meantime (a payment or refund, or another change). Check the new figures below and confirm again.",
+    );
+  }
+}
+
+/** Every amount the broker was shown: each policy's lines, and its balance before and after. */
+function fingerprintOf(steps: Step[]): string {
+  const line = (l: PlannedLine) => [l.description, l.amountCents];
+  return JSON.stringify(
+    steps.map((s) => [
+      s.policyId,
+      s.planned.preview.balanceBeforeCents,
+      s.planned.preview.balanceAfterCents,
+      s.planned.preview.reversals.map(line),
+      s.planned.preview.postings.map(line),
+    ]),
+  );
+}
 
 /** Days with no cover: from `from` up to, not including, `to`. */
 export type Gap = { from: ISODate; to: ISODate; days: number };
@@ -131,14 +159,25 @@ const rateFor = (code: string) => ({ code, annualPremiumCents: getCoverage(code)
 /* Issue                                                               */
 /* ------------------------------------------------------------------ */
 
-export async function issuePolicy(input: {
+type IssueInput = {
   customerId: string;
   startDate: ISODate;
   coverageCodes: string[];
   userId: string;
   /** Set when this policy renews an earlier one. */
   renewedFromId?: string;
-}) {
+};
+
+export async function issuePolicy(input: IssueInput) {
+  return db.$transaction((tx) => issuePolicyIn(tx, input));
+}
+
+/**
+ * Issues a policy as part of a transaction the caller already has open, so the
+ * policy and whatever it is issued from (a signed application) are saved
+ * together or not at all.
+ */
+export async function issuePolicyIn(tx: Tx, input: IssueInput) {
   const event: PolicyEvent = {
     type: "ISSUE",
     startDate: input.startDate,
@@ -148,35 +187,33 @@ export async function issuePolicy(input: {
   // Validates the event and gives us the charge lines.
   const state = replay([{ id: NEW, event }]);
 
-  return db.$transaction(async (tx) => {
-    const policy = await tx.policy.create({
-      data: {
-        policyNumber: await nextPolicyNumber(tx, input.startDate),
-        customerId: input.customerId,
-        productCode: "SBP",
-        commissionRateBps: COMMISSION_RATE_BPS,
-        renewedFromId: input.renewedFromId ?? null,
-        startDate: toJSDate(event.startDate),
-        endDate: toJSDate(event.endDate),
-      },
-    });
-    const transaction = await tx.policyTransaction.create({
-      data: {
-        policyId: policy.id,
-        seq: 1,
-        type: "ISSUE",
-        effectiveDate: toJSDate(event.startDate),
-        data: event,
-        createdById: input.userId,
-      },
-    });
-    for (const line of allLines(state)) {
-      await tx.ledgerEntry.create({
-        data: entryData(policy.id, transaction.id, transaction.id, line, describe(line, event)),
-      });
-    }
-    return policy;
+  const policy = await tx.policy.create({
+    data: {
+      policyNumber: await nextPolicyNumber(tx, input.startDate),
+      customerId: input.customerId,
+      productCode: "SBP",
+      commissionRateBps: COMMISSION_RATE_BPS,
+      renewedFromId: input.renewedFromId ?? null,
+      startDate: toJSDate(event.startDate),
+      endDate: toJSDate(event.endDate),
+    },
   });
+  const transaction = await tx.policyTransaction.create({
+    data: {
+      policyId: policy.id,
+      seq: 1,
+      type: "ISSUE",
+      effectiveDate: toJSDate(event.startDate),
+      data: event,
+      createdById: input.userId,
+    },
+  });
+  for (const line of allLines(state)) {
+    await tx.ledgerEntry.create({
+      data: entryData(policy.id, transaction.id, transaction.id, line, describe(line, event)),
+    });
+  }
+  return policy;
 }
 
 /**
@@ -205,12 +242,19 @@ export async function previewChange(policyId: string, request: ChangeRequest): P
  *
  * `affected` lists every policy that was changed, this one first.
  */
-export async function applyChange(policyId: string, request: ChangeRequest, userId: string) {
+export async function applyChange(
+  policyId: string,
+  request: ChangeRequest,
+  userId: string,
+  /** The fingerprint of the preview the broker confirmed. If the figures have moved since, nothing is saved. */
+  previewed?: string,
+) {
   return db.$transaction(async (tx) => {
     // One change at a time per policy and its renewals, so two brokers can't
     // post from the same starting point.
     await lockChain(tx, policyId);
     const { steps, preview } = await planWithRenewal(tx, policyId, request);
+    if (previewed !== undefined && previewed !== preview.fingerprint) throw new PreviewChangedError(preview);
     if (preview.reasonRequired && !request.reason?.trim()) {
       throw new PolicyRuleError("This leaves days without coverage, so it needs a reason. Enter one to confirm.");
     }
@@ -434,6 +478,7 @@ async function planWithRenewal(
       renewal,
       gapAfterOriginal,
       reasonRequired: Boolean(gapAfterOriginal || (renewal?.chosen === "KEEP" && renewal.gapIfKept)),
+      fingerprint: fingerprintOf(steps),
     },
   };
 }

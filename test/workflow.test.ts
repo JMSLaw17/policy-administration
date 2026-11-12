@@ -5,7 +5,8 @@ import { claimsForPolicy, decideClaim, fileClaim, payClaim } from "@/lib/policie
 import { commissionForPolicy } from "@/lib/policies/commissions";
 import { updateCustomerDetails } from "@/lib/policies/details";
 import { previewRenewal, renewPolicy } from "@/lib/policies/renewals";
-import { applyChange, issuePolicy, previewChange } from "@/lib/policies/service";
+import { issueFromApplication } from "@/lib/policies/applications";
+import { applyChange, issuePolicy, PreviewChangedError, previewChange } from "@/lib/policies/service";
 import { loadPolicyView } from "@/lib/policies/view";
 
 /**
@@ -609,3 +610,97 @@ describe("claims", () => {
     expect(todayISO()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 });
+
+describe("confirming a change the broker previewed", () => {
+  it("saves nothing if the figures have moved since the preview, and shows the new ones", async () => {
+    const policy = await issue();
+    const cancel = { kind: "CANCELLATION" as const, effectiveDate: "2027-04-01" };
+
+    // The broker previews a cancellation while the premium is unpaid: the customer would still owe.
+    const previewed = await previewChange(policy.id, cancel);
+    expect(previewed).toMatchObject({ balanceBeforeCents: 109_500, balanceAfterCents: 54_600 });
+
+    // The customer's payment lands before the broker confirms. Confirming now would refund instead.
+    await payInFull(policy.id);
+    const refused = await applyChange(policy.id, cancel, brokerId, previewed.fingerprint).catch((e) => e);
+    expect(refused).toBeInstanceOf(PreviewChangedError);
+    const fresh = (refused as PreviewChangedError).preview;
+    expect(fresh).toMatchObject({ balanceBeforeCents: 0, balanceAfterCents: -54_900 });
+
+    // Nothing was saved.
+    const view = (await loadPolicyView(policy.id))!;
+    expect(view.status).toBe("ACTIVE");
+    expect(view.history).toHaveLength(1);
+
+    // Confirming the new figures saves the change.
+    await applyChange(policy.id, cancel, brokerId, fresh.fingerprint);
+    expect((await loadPolicyView(policy.id))!).toMatchObject({ status: "CANCELLED", balanceCents: -54_900 });
+  });
+
+  it("saves when the figures are the ones previewed", async () => {
+    const policy = await issue();
+    const add = { kind: "COVERAGE_CHANGE" as const, effectiveDate: "2026-11-01", add: ["CYBER"], remove: [] };
+    const previewed = await previewChange(policy.id, add);
+    // Previewing again gives the same fingerprint, and a different change gives a different one.
+    expect((await previewChange(policy.id, add)).fingerprint).toBe(previewed.fingerprint);
+    expect((await previewChange(policy.id, { ...add, effectiveDate: "2026-11-02" })).fingerprint).not.toBe(previewed.fingerprint);
+
+    await applyChange(policy.id, add, brokerId, previewed.fingerprint);
+    expect((await loadPolicyView(policy.id))!.balanceCents).toBe(109_500 + 66_800);
+  });
+});
+
+describe("issuing from a signed application", () => {
+  const signedApplication = (coverageCodes = ["GL"]) =>
+    db.application.create({
+      data: {
+        customerId,
+        startDate: new Date("2026-10-01"),
+        coverageCodes,
+        premiumCents: 109_500,
+        status: "SIGNED",
+        signedAt: new Date(),
+        signerName: "Tess Tester",
+        signerEmail: "tess@test-bakery.test",
+        signerUserId: brokerId,
+        createdById: brokerId,
+      },
+    });
+
+  it("issues one policy when two brokers click at the same moment", async () => {
+    const application = await signedApplication();
+    const results = await Promise.allSettled([
+      issueFromApplication(application.id, brokerId),
+      issueFromApplication(application.id, brokerId),
+    ]);
+
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    const refused = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect(refused.reason).toBeInstanceOf(PolicyRuleError);
+    expect(refused.reason.message).toMatch(/already been issued/);
+
+    // One policy, one premium charge, and the application points at it.
+    const policies = await db.policy.findMany({ where: { customerId } });
+    expect(policies).toHaveLength(1);
+    expect(await db.ledgerEntry.count()).toBe(1);
+    expect(await db.application.findUniqueOrThrow({ where: { id: application.id } })).toMatchObject({
+      status: "ISSUED",
+      policyId: policies[0].id,
+    });
+
+    // A later retry is refused too.
+    await expect(issueFromApplication(application.id, brokerId)).rejects.toThrow(/already been issued/);
+    expect(await db.policy.count()).toBe(1);
+  });
+
+  it("leaves the application signed, with no policy, if issuing fails part-way", async () => {
+    const application = await signedApplication(["NOT-A-COVERAGE"]);
+    await expect(issueFromApplication(application.id, brokerId)).rejects.toThrow();
+    expect(await db.policy.count()).toBe(0);
+    expect(await db.application.findUniqueOrThrow({ where: { id: application.id } })).toMatchObject({
+      status: "SIGNED",
+      policyId: null,
+    });
+  });
+});
+

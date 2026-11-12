@@ -26,17 +26,21 @@ export function useChangeFlow(policyId: string) {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Set when a confirmation was refused because the figures had moved since the preview. */
+  const [changed, setChanged] = useState<string | null>(null);
 
   const reset = () => {
     setRequest(null);
     setPreview(null);
     setError(null);
+    setChanged(null);
   };
 
   const runPreview = (next: ChangeRequest) =>
     startTransition(async () => {
       setDone(false);
       setNotice(null);
+      setChanged(null);
       const result = await previewChangeAction(policyId, next);
       if (result.ok) {
         setRequest(next);
@@ -50,13 +54,20 @@ export function useChangeFlow(policyId: string) {
 
   const confirm = (onSaved?: () => void) =>
     startTransition(async () => {
-      if (!request) return;
-      const result = await applyChangeAction(policyId, request);
+      if (!request || !preview) return;
+      // The preview's fingerprint goes with the confirmation, so what is saved is what was shown.
+      const result = await applyChangeAction(policyId, request, preview.fingerprint);
       if (result.ok) {
         reset();
         setDone(true);
         setNotice(result.notice ?? null);
         onSaved?.();
+        router.refresh();
+      } else if (result.preview) {
+        // Nothing was saved. Show the new figures and ask again.
+        setPreview(result.preview);
+        setChanged(result.error);
+        setError(null);
         router.refresh();
       } else {
         setPreview(null);
@@ -72,7 +83,7 @@ export function useChangeFlow(policyId: string) {
   /** The reason can still be typed after the preview, because a gap can only be saved with one. */
   const setReason = (reason: string) => setRequest((r) => (r ? { ...r, reason } : r));
 
-  return { pending, preview, request, error, done, notice, runPreview, confirm, reset, chooseRenewal, setReason };
+  return { pending, preview, request, error, done, notice, changed, runPreview, confirm, reset, chooseRenewal, setReason };
 }
 
 export type ChangeFlow = ReturnType<typeof useChangeFlow>;
@@ -98,6 +109,12 @@ export function PreviewPanel({
   const missingReason = preview.reasonRequired && !reason.trim();
   return (
     <div className="mt-4 rounded-md border border-indigo-200 bg-indigo-50/50 p-4" data-testid="preview">
+      {flow.changed && (
+        <p role="alert" className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="preview-changed">
+          <span className="font-medium">Not saved. </span>
+          {flow.changed}
+        </p>
+      )}
       <h3 className="text-sm font-semibold text-slate-900">What this will do to the statement</h3>
       <table className="mt-2 w-full text-sm">
         <tbody className="divide-y divide-indigo-100">

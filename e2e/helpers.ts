@@ -18,7 +18,18 @@ export async function signIn(browser: Browser, email: string): Promise<Page> {
 
 /** Pays the amount due by typing a card into Stripe's form. */
 export async function payByCard(page: Page, card: string) {
-  await page.getByRole("button", { name: /^Pay \$[\d,.]+ now$/ }).click();
+  await openPayForm(page);
+  await fillCard(page, card);
+  await payButton(page).click();
+}
+
+export const openPayForm = (page: Page) => page.getByRole("button", { name: /^Pay \$[\d,.]+ now$/ }).click();
+
+/** The Pay button under Stripe's form, which carries the amount that will be collected. */
+export const payButton = (page: Page) => page.locator("#pay form").getByRole("button", { name: /^Pay \$[\d,.]+$/ });
+
+/** Types a card into Stripe's form, once it is open, and waits for the form to settle. */
+export async function fillCard(page: Page, card: string) {
   // Stripe's form lives in a frame served by Stripe, which is why it needs a frame locator.
   // Stripe adds hidden helper frames with the same title, so pick the one on screen.
   const stripe = page.locator('iframe[title="Secure payment input frame"]:visible').first().contentFrame();
@@ -41,9 +52,7 @@ export async function payByCard(page: Page, card: string) {
     expect(settled).toBe(true);
   }).toPass({ intervals: [300] });
 
-  const pay = page.locator("#pay form").getByRole("button", { name: /^Pay \$[\d,.]+$/ });
-  await pay.scrollIntoViewIfNeeded();
-  await pay.click();
+  await payButton(page).scrollIntoViewIfNeeded();
 }
 
 export const balance = (page: Page) => page.getByTestId("balance");

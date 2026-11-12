@@ -18,6 +18,7 @@ import { renewPolicy } from "@/lib/policies/renewals";
 import {
   applyChange,
   issuePolicy,
+  PreviewChangedError,
   previewChange,
   type ChangePreview,
   type ChangeRequest,
@@ -186,7 +187,8 @@ const ChangeSchema: z.ZodType<ChangeRequest> = z.discriminatedUnion("kind", [
 
 export type ChangeResult =
   | { ok: true; preview: ChangePreview; notice?: string }
-  | { ok: false; error: string };
+  /** `preview` is set when nothing was saved because the figures moved: it holds the new ones to confirm. */
+  | { ok: false; error: string; preview?: ChangePreview };
 
 /** Step 1: show the broker what the change will do to the statement. */
 export async function previewChangeAction(policyId: string, request: unknown): Promise<ChangeResult> {
@@ -201,16 +203,26 @@ export async function previewChangeAction(policyId: string, request: unknown): P
   }
 }
 
-/** Step 2: save it, then refund any credit it leaves the customer with. */
-export async function applyChangeAction(policyId: string, request: unknown): Promise<ChangeResult> {
+/**
+ * Step 2: save it, then refund any credit it leaves the customer with.
+ *
+ * `previewed` is the fingerprint of the preview the broker is confirming. If a
+ * payment or another change has landed since, the figures are different now,
+ * so nothing is saved and the broker is shown the new figures to confirm.
+ */
+export async function applyChangeAction(policyId: string, request: unknown, previewed: string): Promise<ChangeResult> {
   const user = await requireUser("BROKER");
   const parsed = ChangeSchema.safeParse(request);
   if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
 
   let result: Awaited<ReturnType<typeof applyChange>>;
   try {
-    result = await applyChange(policyId, parsed.data, user.id);
+    result = await applyChange(policyId, parsed.data, user.id, String(previewed));
   } catch (error) {
+    if (error instanceof PreviewChangedError) {
+      revalidatePolicy(policyId);
+      return { ok: false, error: error.message, preview: error.preview };
+    }
     if (error instanceof PolicyRuleError) return { ok: false, error: error.message };
     throw error;
   }

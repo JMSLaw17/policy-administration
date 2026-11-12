@@ -1,6 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Browser, type Page } from "@playwright/test";
 import { DEMO_PASSWORD } from "../src/lib/demo";
-import { balance, CARD_DECLINED, CARD_OK, payByCard, signIn } from "./helpers";
+import { balance, CARD_DECLINED, CARD_OK, fillCard, openPayForm, payButton, payByCard, signIn } from "./helpers";
 
 /**
  * The scenario the reviewers will test, driven through the real screens in a
@@ -197,3 +197,104 @@ test("the demo scenario button sets up the reviewers' starting point in one clic
     await broker.screenshot({ path: "docs/screenshots/demo-scenario-corrected.png" });
   }
 });
+
+/** Loads a demo scenario (a paid policy with Cyber on it) and signs in as its policyholder too. */
+async function demoPolicy(browser: Browser) {
+  const broker = await signIn(browser, "broker@demo.test");
+  await broker.getByRole("button", { name: "Load demo scenario" }).click();
+  await expect(broker).toHaveURL(/\/broker\/policies\//, { timeout: 60_000 });
+  const policyUrl = broker.url().split("#")[0];
+  await broker.getByRole("link", { name: /^← / }).click();
+  const login = (await broker.getByText(/Policyholder login:/).innerText()).match(/[\w.-]+@[\w.-]+\.test/)![0];
+  await broker.goto(policyUrl);
+  const holder = await signIn(browser, login);
+  await holder.goto(policyUrl.replace("/broker/", "/portal/"));
+  return { broker, holder };
+}
+
+/** Moves the start of Cyber by a number of days, correcting the latest version of that change. */
+async function moveCyber(broker: Page, days: number) {
+  await broker.reload();
+  await broker.locator("#history").getByRole("button", { name: "Correct this" }).last().click();
+  const form = broker.locator('[data-testid^="correct-"]');
+  const date = form.locator('input[name="correctedDate"]');
+  const recorded = await date.inputValue();
+  await date.fill(new Date(Date.parse(`${recorded}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10));
+  await form.getByRole("button", { name: "Preview correction" }).click();
+  await form.getByRole("button", { name: "Confirm correction" }).click();
+}
+
+test("the Pay button shows what Stripe will collect, and asks again when the amount changed", async ({ browser }) => {
+  const { broker, holder } = await demoPolicy(browser);
+
+  // Cyber began a week earlier: $14.00 is due, and the policyholder has the page open.
+  await moveCyber(broker, -7);
+  await expect(balance(broker)).toHaveText("$14.00");
+  await holder.reload();
+  await expect(holder.getByRole("button", { name: "Pay $14.00 now" })).toBeVisible();
+
+  // Before they pay, the broker moves it another week earlier. The open page still says $14.00.
+  await moveCyber(broker, -7);
+  await expect(balance(broker)).toHaveText("$28.00");
+  await openPayForm(holder);
+
+  // The form shows the amount Stripe holds, says it changed, and won't take payment until they agree.
+  const changed = holder.getByTestId("amount-changed");
+  await expect(changed).toContainText("It was $14.00 and is now $28.00");
+  await expect(payButton(holder)).toHaveText("Pay $28.00");
+  await expect(payButton(holder)).toBeDisabled();
+  await fillCard(holder, CARD_OK);
+  await changed.getByRole("checkbox").check();
+  await expect(payButton(holder)).toBeEnabled();
+
+  // With the form still open, the broker moves it back a week. Stripe now holds $14.00, not the $28.00 on the button.
+  await moveCyber(broker, 7);
+  await expect(balance(broker)).toHaveText("$14.00");
+  await payButton(holder).click();
+  // Nothing is charged. The button catches up, and asks again.
+  await expect(changed).toContainText("It was $28.00 and is now $14.00");
+  await expect(payButton(holder)).toHaveText("Pay $14.00");
+  await expect(payButton(holder)).toBeDisabled();
+  await changed.getByRole("checkbox").check();
+  await payButton(holder).click();
+
+  await expect(balance(holder)).toHaveText("$0.00");
+  // One payment of $14.00 was taken, on top of the scenario's two.
+  await expect(holder.locator("#statement").getByText("Payment received (card ending 4242)")).toHaveCount(3);
+  await expect(holder.getByTestId("statement-summary").getByTestId("summary-refunds")).toHaveText("$0.00");
+});
+
+test("a broker's confirmation is refused when a payment landed after the preview", async ({ browser }) => {
+  const { broker, holder } = await demoPolicy(browser);
+  await moveCyber(broker, -7);
+  await expect(balance(broker)).toHaveText("$14.00");
+
+  // The broker previews a cancellation while $14.00 is unpaid.
+  await broker.reload();
+  const card = broker.locator("#cancel");
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+  await card.locator('input[type="date"]').fill(today);
+  await card.locator("input:not([type=date])").first().fill("Customer closed the business");
+  await card.getByRole("button", { name: "Preview cancellation" }).click();
+  const refundBefore = await card.getByTestId("preview-after").innerText();
+
+  // The policyholder pays the $14.00 before the broker confirms.
+  await holder.reload();
+  await payByCard(holder, CARD_OK);
+  await expect(balance(holder)).toHaveText("$0.00");
+
+  // Confirming saves nothing: the refund would now be $14.00 larger than the one previewed.
+  await card.getByRole("button", { name: "Cancel the policy" }).click();
+  await expect(card.getByTestId("preview-changed")).toContainText("Not saved.");
+  const dollars = (text: string) => Number(text.replace(/[$,]/g, ""));
+  await expect
+    .poll(async () => dollars(await card.getByTestId("preview-after").innerText()))
+    .toBeCloseTo(dollars(refundBefore) + 14, 2);
+  await expect(broker.getByText("Active", { exact: true }).first()).toBeVisible();
+
+  // Confirming the new figures cancels the policy and refunds them.
+  await card.getByRole("button", { name: "Cancel the policy" }).click();
+  await expect(broker.getByText("Cancelled", { exact: true }).first()).toBeVisible();
+  await expect(balance(broker)).toHaveText("$0.00");
+});
+
