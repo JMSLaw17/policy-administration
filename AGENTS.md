@@ -55,7 +55,7 @@ To look at the running app yourself: `npm run dev`, then sign in at http://local
 - If a newly added route returns 404 in development, restart the dev server.
 - DocuSign's consent redirect was registered for `http://localhost:3100`, so local signing is tested with `npm run dev -- -p 3100`.
 - In browser tests, Stripe's card form resizes as fields appear. Wait for it to settle before clicking Pay (see `payByCard` in `e2e/scenario.spec.ts`).
-- Stripe sends webhooks for every test payment to the deployed app, including payments made locally or by tests. The deployed app ignores payments it doesn't know.
+- Stripe sends webhooks for every test payment to the deployed app, including payments made locally or by tests. The webhook handler ignores, and doesn't log, events whose policy isn't in its own database.
 
 ## The reviewers' scenario
 

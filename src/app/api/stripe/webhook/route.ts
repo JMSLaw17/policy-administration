@@ -1,4 +1,5 @@
 import type Stripe from "stripe";
+import { db } from "@/lib/db";
 import { logIntegrationEvent } from "@/lib/integrations/log";
 import { stripe } from "@/lib/integrations/stripe";
 import { recordPaymentIntent, recordRefund } from "@/lib/policies/payments";
@@ -21,12 +22,20 @@ export async function POST(request: Request) {
   }
 
   const object = event.data.object as { id?: string; metadata?: Record<string, string> | null };
+
+  // One Stripe account can serve several copies of this app (the deployed one,
+  // a developer's machine, automated tests), and Stripe sends every event to
+  // this address. Only act on, and log, events for policies this copy knows.
+  const policyId = object.metadata?.policyId;
+  const known = policyId ? await db.policy.findUnique({ where: { id: policyId }, select: { id: true } }) : null;
+  if (!known) return Response.json({ received: true, ignored: "not one of this app's policies" });
+
   await logIntegrationEvent({
     provider: "stripe",
     direction: "INBOUND",
     eventType: event.type,
     externalId: object.id ?? event.id,
-    policyId: object.metadata?.policyId ?? null,
+    policyId: known.id,
     payload: { eventId: event.id, created: event.created, object: summarise(event) },
   });
 
