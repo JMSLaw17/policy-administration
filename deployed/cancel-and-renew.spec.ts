@@ -35,7 +35,7 @@ test("cancelling a paid policy credits the unused days and refunds them to the c
 
   const card = broker.locator("#cancel");
   await card.locator('input[type="date"]').fill(todayInNewYork());
-  await card.locator("input:not([type=date])").first().fill("Deployed check: customer closed the business");
+  await card.locator("input:not([type=date])").first().fill("Customer closed the business");
   await card.getByRole("button", { name: "Preview cancellation" }).click();
   const preview = card.getByTestId("preview");
   await expect(preview).toContainText("General Liability: unused days after cancellation");

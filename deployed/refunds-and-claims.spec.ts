@@ -74,7 +74,7 @@ test(`refunds and claims on ${POLICY}`, async ({ browser }) => {
     const form = broker.locator('[data-testid^="correct-"]');
     const date = form.locator('input[name="correctedDate"]');
     await date.fill(addDays(await date.inputValue(), 7));
-    await form.locator('input[name="correctionReason"]').fill("Deployed check: coverage began a week later than recorded");
+    await form.locator('input[name="correctionReason"]').fill("Coverage began a week later than recorded");
     await form.getByRole("button", { name: "Preview correction" }).click();
     await expect(form.getByTestId("preview")).toContainText("Credit to refund to the customer");
     refundText = await form.getByTestId("preview-after").innerText();
@@ -114,7 +114,7 @@ test(`refunds and claims on ${POLICY}`, async ({ browser }) => {
   let approved = "";
   let denied = "";
   await test.step("the policyholder files a claim, and the broker approves and pays it", async () => {
-    approved = await fileClaim("4,000", "Deployed check: a customer slipped on a wet floor.");
+    approved = await fileClaim("4,000", "A customer slipped on a wet floor and was injured.");
     await broker.reload();
     const claim = broker.locator(`#claim-${approved}`);
     await claim.locator('input[name="approved"]').fill("3500");
@@ -126,12 +126,12 @@ test(`refunds and claims on ${POLICY}`, async ({ browser }) => {
   });
 
   await test.step("the policyholder files another, and the broker denies it with a reason", async () => {
-    denied = await fileClaim("900", "Deployed check: a visitor's phone was broken.");
+    denied = await fileClaim("900", "A delivery driver dropped and broke their own phone on our premises.");
     await broker.reload();
     const claim = broker.locator(`#claim-${denied}`);
     await claim.getByRole("button", { name: "Deny" }).click();
     await expect(claim.getByRole("alert")).toContainText("Give the reason");
-    await claim.locator('input[name="note"]').fill("Deployed check: not a loss the business is liable for.");
+    await claim.locator('input[name="note"]').fill("The business is not liable for damage a visitor causes to their own property.");
     await claim.getByRole("button", { name: "Deny" }).click();
     await expect(claim).toContainText("Denied");
   });
@@ -141,7 +141,7 @@ test(`refunds and claims on ${POLICY}`, async ({ browser }) => {
     await expect(holder.locator(`#claim-${approved}`)).toContainText("Paid");
     await expect(holder.locator(`#claim-${approved}`)).toContainText("$3,000.00");
     await expect(holder.locator(`#claim-${denied}`)).toContainText("Denied");
-    await expect(holder.locator(`#claim-${denied}`)).toContainText("not a loss the business is liable for");
+    await expect(holder.locator(`#claim-${denied}`)).toContainText("not liable for damage a visitor causes");
     await expect(holder.locator(`#claim-${approved}`).getByRole("button")).toHaveCount(0);
     await expect(balance(holder)).toHaveText("$0.00");
   });
