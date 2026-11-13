@@ -26,7 +26,7 @@ export class PaymentError extends Error {}
 export class AlreadyPaidError extends PaymentError {}
 
 const CANCELLED_NOTE = "The payment was cancelled.";
-const SUPERSEDED_NOTE = "Not submitted. Closed when the amount due changed.";
+const SUPERSEDED_NOTE = "Closed because the amount due changed. The payment did not complete.";
 /** Reasons that mean an attempt is closed for good, as opposed to declined and open for another try. */
 const RETURNED_NOTE = "Returned by the bank after it had cleared.";
 const CLOSED_NOTES = [CANCELLED_NOTE, SUPERSEDED_NOTE, RETURNED_NOTE];
@@ -398,7 +398,8 @@ async function closeOutdated(
     await recordPaymentIntent(closed);
     return;
   }
-  // An attempt the customer never submitted is marked as replaced. A declined one keeps its reason.
+  // An attempt that hadn't finished is marked as closed, whether the customer had yet to enter a
+  // card or was part-way through (authenticating, say). A declined one keeps its reason.
   await db.payment.updateMany({
     where: { id: payment.id, status: "INITIATED" },
     data: { status: "FAILED", failureReason: due <= 0 ? CANCELLED_NOTE : SUPERSEDED_NOTE, closedAt: new Date() },

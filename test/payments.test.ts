@@ -265,7 +265,7 @@ describe("a payment form left open while the broker changes the policy", () => {
     const due = full - WEEK_OF_CYBER;
     expect(intent).toMatchObject({ status: "canceled", amount: full });
     const closed = await db.payment.findUniqueOrThrow({ where: { id: paymentId } });
-    expect(closed).toMatchObject({ status: "FAILED", amountCents: full, failureReason: "Not submitted. Closed when the amount due changed." });
+    expect(closed).toMatchObject({ status: "FAILED", amountCents: full, failureReason: "Closed because the amount due changed. The payment did not complete." });
     expect(closed.closedAt).not.toBeNull();
 
     // Opening checkout again gives a new payment for exactly what is due. Paying it settles the policy.

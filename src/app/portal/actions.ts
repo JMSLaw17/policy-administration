@@ -14,7 +14,7 @@ import { AlreadyPaidError, PaymentError, reconcilePending, startPayment } from "
 export type StartPaymentResult =
   | { ok: true; clientSecret: string; amountCents: number }
   /** Nothing is due after all. The page was out of date: the policy is paid. */
-  | { ok: false; paid: true; message: string }
+  | { ok: false; paid: true; message: string; statementLines: number }
   | { ok: false; paid?: false; error: string };
 
 /** A policyholder may only act on their own policies. */
@@ -33,7 +33,12 @@ export async function startPaymentAction(policyId: string): Promise<StartPayment
     // went through, or one now being processed. Either way the page is refreshed to show them.
     revalidatePath(`/portal/policies/${policyId}`);
     revalidatePath(`/broker/policies/${policyId}`);
-    if (error instanceof AlreadyPaidError) return { ok: false, paid: true, message: error.message };
+    if (error instanceof AlreadyPaidError) {
+      // How long the statement is now that the payment is on it. The page uses this to tell
+      // "not caught up yet" from "something new has been posted since".
+      const statementLines = await db.ledgerEntry.count({ where: { policyId } });
+      return { ok: false, paid: true, message: error.message, statementLines };
+    }
     if (error instanceof PaymentError || error instanceof StripeNotConfiguredError) {
       return { ok: false, error: error.message };
     }

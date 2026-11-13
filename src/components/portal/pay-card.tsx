@@ -25,6 +25,7 @@ export function PayCard({
   amountDueCents,
   dueDate,
   hasPendingPayment,
+  statementLines,
   reasons,
 }: {
   policyId: string;
@@ -32,6 +33,8 @@ export function PayCard({
   /** Set when the term hasn't started yet, so the premium isn't due until then. */
   dueDate?: string | null;
   hasPendingPayment: boolean;
+  /** How many lines the statement on this page has. */
+  statementLines: number;
   /** The changes this amount comes from, oldest first, so the customer isn't asked to pay without being told why. */
   reasons: DueReason[];
 }) {
@@ -42,8 +45,8 @@ export function PayCard({
   const clientSecret = checkout?.clientSecret ?? null;
   const [error, setError] = useState<string | null>(null);
   // Set when checkout found that nothing is due after all, because an earlier payment went through.
-  // `refreshed` turns true once this page has caught up and shows nothing due.
-  const [paid, setPaid] = useState<{ message: string; refreshed: boolean } | null>(null);
+  // `statementLines` is how long the statement was once that payment was on it.
+  const [paid, setPaid] = useState<{ message: string; statementLines: number } | null>(null);
   const [processing, setProcessing] = useState(false);
 
   // While Stripe is still working on a payment, keep checking until it settles.
@@ -58,13 +61,11 @@ export function PayCard({
 
   // Checkout found the policy already paid. Say so in place of the Pay button: straight away,
   // while this page still shows the old amount, and after it has refreshed to show nothing due.
-  // The notice is tied to that refresh, not to the amount. Once the page has shown nothing due,
-  // any amount that appears afterwards is a new one, even if it is the same figure, so the
-  // notice is dropped and the Pay button comes back. (State is adjusted during render, which
-  // React allows for state derived from props.)
-  if (paid && !paid.refreshed && amountDueCents <= 0) setPaid({ ...paid, refreshed: true });
-  if (paid?.refreshed && amountDueCents > 0) setPaid(null);
-  if (paid && (amountDueCents <= 0 || !paid.refreshed)) {
+  // The notice is tied to the statement, not to the amount or to what this page has displayed.
+  // While the page's statement is shorter than the one checkout settled, the page is behind and
+  // its amount is out of date. Once it has caught up, an amount due is real, whether or not the
+  // page ever showed zero in between, so the Pay button is shown.
+  if (paid && (amountDueCents <= 0 || statementLines < paid.statementLines)) {
     return (
       <Card id="pay" title="Paid">
         <p className="px-5 py-4 text-sm text-green-800" data-testid="already-paid">
@@ -95,7 +96,7 @@ export function PayCard({
       const result = await startPaymentAction(policyId);
       if (!result.ok) {
         // The server may have recorded a payment, or found one in progress. Show the page as it is now.
-        if (result.paid) setPaid({ message: result.message, refreshed: false });
+        if (result.paid) setPaid({ message: result.message, statementLines: result.statementLines });
         else setError(result.error);
         router.refresh();
         return;

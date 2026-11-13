@@ -38,6 +38,7 @@ export default async function PortalPolicyPage(props: PageProps<"/portal/policie
         amountDueCents={view.balanceCents}
         hasPendingPayment={hasPendingPayment}
         dueDate={view.dueDate}
+        statementLines={view.statement.length}
         reasons={view.dueBecause}
       />
       <CoverageCard view={view} />
