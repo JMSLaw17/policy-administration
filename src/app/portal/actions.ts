@@ -9,11 +9,13 @@ import { StripeNotConfiguredError } from "@/lib/integrations/stripe";
 import { PolicyRuleError } from "@/lib/engine";
 import { DocuSignError } from "@/lib/integrations/docusign";
 import { signingUrlFor } from "@/lib/policies/applications";
-import { PaymentError, reconcilePending, startPayment } from "@/lib/policies/payments";
+import { AlreadyPaidError, PaymentError, reconcilePending, startPayment } from "@/lib/policies/payments";
 
 export type StartPaymentResult =
   | { ok: true; clientSecret: string; amountCents: number }
-  | { ok: false; error: string };
+  /** Nothing is due after all. The page was out of date: the policy is paid. */
+  | { ok: false; paid: true; message: string }
+  | { ok: false; paid?: false; error: string };
 
 /** A policyholder may only act on their own policies. */
 async function requireOwnPolicy(policyId: string) {
@@ -27,6 +29,11 @@ export async function startPaymentAction(policyId: string): Promise<StartPayment
   try {
     return { ok: true, ...(await startPayment(policyId)) };
   } catch (error) {
+    // Starting checkout can settle things the page didn't know about: an earlier payment that
+    // went through, or one now being processed. Either way the page is refreshed to show them.
+    revalidatePath(`/portal/policies/${policyId}`);
+    revalidatePath(`/broker/policies/${policyId}`);
+    if (error instanceof AlreadyPaidError) return { ok: false, paid: true, message: error.message };
     if (error instanceof PaymentError || error instanceof StripeNotConfiguredError) {
       return { ok: false, error: error.message };
     }

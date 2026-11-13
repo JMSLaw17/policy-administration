@@ -40,6 +40,8 @@ const fake = vi.hoisted(() => ({
   cancelFails: false,
   /** Runs once, just before Stripe is next asked about a payment: the place other news can arrive. */
   meanwhile: null as null | (() => Promise<void>),
+  /** Makes the next change to a payment's amount take this long to reach Stripe. */
+  slowNextUpdateMs: 0,
   /** Disputes as Stripe holds them, by id. */
   disputes: new Map<string, unknown>(),
 }));
@@ -66,7 +68,13 @@ vi.mock("@/lib/integrations/stripe", async () => {
           await meanwhile?.();
           return fake.intents.get(id)!;
         },
-        update: async (id: string, data: { amount: number }) => Object.assign(fake.intents.get(id)!, data),
+        update: async (id: string, data: { amount: number }) => {
+          // A slow request: Stripe applies it when it arrives, not when it was sent.
+          const delay = fake.slowNextUpdateMs;
+          fake.slowNextUpdateMs = 0;
+          if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+          return Object.assign(fake.intents.get(id)!, data);
+        },
         cancel: async (id: string) => {
           const intent = fake.intents.get(id)!;
           if (fake.cancelFails || intent.status === "succeeded") {
@@ -141,6 +149,7 @@ beforeEach(async () => {
   fake.refundStatus = "succeeded";
   fake.cancelFails = false;
   fake.meanwhile = null;
+  fake.slowNextUpdateMs = 0;
   fake.disputes.clear();
 });
 
@@ -265,6 +274,32 @@ describe("a payment form left open while the broker changes the policy", () => {
     await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
     await syncOpenPayments(policyId);
     expect(intent.amount).toBe(GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER);
+  });
+
+  it("isn't put back up by a slow update for an earlier change", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "requires_payment_method");
+    const full = GL + CYBER_FROM_OCT_25;
+
+    // A first correction takes a week off. Its update to Stripe is slow to arrive.
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    fake.slowNextUpdateMs = 200;
+    const firstUpdate = syncOpenPayments(policyId);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // it is on its way to Stripe
+
+    // Meanwhile a second correction takes another week off, and its update is sent.
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-08");
+    await syncOpenPayments(policyId);
+    await firstUpdate;
+
+    // The payment ends at what is due now. The first update didn't land last and undo the second.
+    const due = full - 2 * WEEK_OF_CYBER;
+    expect(await balance(policyId)).toBe(due);
+    expect(intent.amount).toBe(due);
+    expect((await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).amountCents).toBe(due);
+    // And checkout offers that amount.
+    expect((await startPayment(policyId)).amountCents).toBe(due);
+    expect(fake.intents.size).toBe(1);
   });
 
   it("is never raised: the customer pays what their screen showed and the rest stays due", async () => {

@@ -41,6 +41,9 @@ export function PayCard({
   const [checkout, setCheckout] = useState<{ clientSecret: string; amountCents: number; quotedCents: number } | null>(null);
   const clientSecret = checkout?.clientSecret ?? null;
   const [error, setError] = useState<string | null>(null);
+  // Set when checkout found that nothing is due after all, because an earlier payment went through.
+  // `stale` is the amount this page was still showing as due at that moment.
+  const [paid, setPaid] = useState<{ message: string; stale: number } | null>(null);
   const [processing, setProcessing] = useState(false);
 
   // While Stripe is still working on a payment, keep checking until it settles.
@@ -53,6 +56,18 @@ export function PayCard({
     return () => clearInterval(timer);
   }, [waiting, policyId, router]);
 
+  // Checkout found the policy already paid. Say so in place of the Pay button, straight away
+  // and after the page has refreshed to show nothing due. If an amount later falls due, the
+  // button comes back.
+  if (paid && (amountDueCents <= 0 || amountDueCents === paid.stale)) {
+    return (
+      <Card id="pay" title="Paid">
+        <p className="px-5 py-4 text-sm text-green-800" data-testid="already-paid">
+          {paid.message}
+        </p>
+      </Card>
+    );
+  }
   if (amountDueCents <= 0) return null;
 
   // Stripe can't collect less than $0.50, so no payment is offered. The amount stays on the statement.
@@ -72,7 +87,14 @@ export function PayCard({
     startTransition(async () => {
       setError(null);
       const result = await startPaymentAction(policyId);
-      if (!result.ok) return setError(result.error);
+      if (!result.ok) {
+        // The server may have recorded a payment, or found one in progress. Show the page as it is now.
+        if (result.paid) setPaid({ message: result.message, stale: amountDueCents });
+        else setError(result.error);
+        router.refresh();
+        return;
+      }
+      setPaid(null);
       // The amount comes from the server, not from this page, which may have been open a while.
       // `quotedCents` is what the button the customer just pressed said.
       setCheckout({ clientSecret: result.clientSecret, amountCents: result.amountCents, quotedCents: amountDueCents });

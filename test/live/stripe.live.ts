@@ -12,6 +12,7 @@ import {
   recordRefund,
   refundCredit,
   startPayment,
+  syncOpenPayments,
 } from "@/lib/policies/payments";
 import { loadDemoScenario } from "@/lib/policies/demo-scenario";
 import { applyChange, issuePolicy } from "@/lib/policies/service";
@@ -131,6 +132,42 @@ describe("Stripe test mode, end to end", () => {
     // One payment, the one that was retried, and nothing to refund.
     expect(v.payments).toMatchObject([{ status: "SUCCEEDED", amountCents: 109_500, stripePaymentIntentId: intentId }]);
     expect(v.refunds).toHaveLength(0);
+  });
+
+  it("leaves an open payment at the amount due when two corrections' updates overlap", async () => {
+    const policy = await issuePolicy({ customerId, startDate: "2026-10-01", coverageCodes: ["GL"], userId: brokerId });
+    const cyber = await applyChange(
+      policy.id,
+      { kind: "COVERAGE_CHANGE", effectiveDate: "2026-10-18", add: ["CYBER"], remove: [] },
+      brokerId,
+    );
+    const moveCyber = (effectiveDate: string) =>
+      applyChange(
+        policy.id,
+        {
+          kind: "CORRECTION",
+          transactionId: cyber.transaction.id,
+          event: { type: "COVERAGE_CHANGE", effectiveDate, add: ["CYBER"], remove: [] },
+        },
+        brokerId,
+      );
+    // The customer opens checkout for everything due.
+    const opened = await startPayment(policy.id);
+    const intentId = opened.clientSecret.split("_secret_")[0];
+
+    // Two corrections in quick succession, each a week later, each followed by its update to
+    // the open payment. The first update is still on its way when the second is sent.
+    await moveCyber("2026-10-25");
+    const firstUpdate = syncOpenPayments(policy.id);
+    await moveCyber("2026-11-01");
+    await Promise.all([firstUpdate, syncOpenPayments(policy.id)]);
+
+    // Whichever order they ran in, Stripe holds the amount due now, never the earlier, higher one.
+    const due = await balanceCents(policy.id);
+    expect(due).toBe(opened.amountCents - 2_800);
+    expect((await stripe().paymentIntents.retrieve(intentId)).amount).toBe(due);
+    expect((await view(policy.id)).payments).toMatchObject([{ status: "INITIATED", amountCents: due }]);
+    expect(await startPayment(policy.id)).toEqual({ clientSecret: opened.clientSecret, amountCents: due });
   });
 
   it("posts a payment once, however many times Stripe reports it", async () => {

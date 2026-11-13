@@ -18,6 +18,13 @@ import { stripe } from "@/lib/integrations/stripe";
 
 export class PaymentError extends Error {}
 
+/**
+ * Checkout wasn't started because nothing is due: the policy is paid, or the
+ * app has just found out that an earlier payment went through. Not a failure.
+ * The page that asked is out of date and should show the policy as paid.
+ */
+export class AlreadyPaidError extends PaymentError {}
+
 const CANCELLED_NOTE = "The payment was cancelled.";
 const SUPERSEDED_NOTE = "Not submitted. Replaced by a new payment when the amount due went up.";
 /** Reasons that mean an attempt is closed for good, as opposed to declined and open for another try. */
@@ -97,16 +104,11 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
         continue;
       }
       if (intent.amount > due) {
-        current = await stripe().paymentIntents.update(intent.id, { amount: due });
-        await db.payment.update({ where: { id: payment.id }, data: { amountCents: due } });
-        await logIntegrationEvent({
-          provider: "stripe",
-          direction: "OUTBOUND",
-          eventType: "payment_intent.update",
-          externalId: intent.id,
-          policyId,
-          payload: { amount: due, status: current.status },
-        });
+        // Less is due than this attempt was opened for. Bring it down, under the policy lock.
+        const aligned = await alignOpenPayment(policyId, payment.id);
+        // It was cancelled or moved on while we looked. Go round again.
+        if (!aligned || !isUnfinished(aligned)) continue;
+        current = aligned;
       }
       return { clientSecret: current.client_secret!, amountCents: current.amount };
     }
@@ -117,7 +119,7 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
       where: { id: payment.id, status: "INITIATED" },
       data: { status: "FAILED", failureReason: intent.last_payment_error?.message ?? CANCELLED_NOTE },
     });
-    if ((await balanceCents(policyId)) <= 0) throw new PaymentError("This policy has just been paid.");
+    if ((await balanceCents(policyId)) <= 0) throw new AlreadyPaidError("This policy has just been paid, so nothing more is due.");
   }
   throw new PaymentError("We couldn't start the payment. Nothing was charged. Please try again.");
 }
@@ -138,7 +140,7 @@ async function reserveAttempt(policyId: string) {
     await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${policyId} FOR UPDATE`;
     const sum = await tx.ledgerEntry.aggregate({ where: { policyId }, _sum: { amountCents: true } });
     const due = sum._sum.amountCents ?? 0;
-    if (due <= 0) throw new PaymentError("Nothing is due on this policy.");
+    if (due <= 0) throw new AlreadyPaidError("Nothing is due on this policy.");
     if (isBelowMinimumPayment(due)) {
       throw new PaymentError(
         `${formatUSD(due)} is less than ${formatUSD(MIN_PAYMENT_CENTS)}, the smallest amount that can be collected. It stays on the statement and will be added to the next payment.`,
@@ -234,7 +236,7 @@ async function settleDeclinedAttempts(policyId: string) {
       throw new PaymentError("A payment is already being processed. It can take a little while to clear.");
     }
     if (intent.status === "succeeded" && (await balanceCents(policyId)) <= 0) {
-      throw new PaymentError("Your earlier payment went through, so nothing more is due.");
+      throw new AlreadyPaidError("Your earlier payment went through, so nothing more is due.");
     }
   }
 }
@@ -365,53 +367,86 @@ export async function syncOpenPayments(policyId: string) {
       OR: [{ status: "INITIATED" }, { status: "FAILED", closedAt: null, failureReason: { notIn: CLOSED_NOTES } }],
     },
   });
-  if (open.length === 0) return;
-
-  const due = await balanceCents(policyId);
   for (const p of open) {
     try {
-      const intent = await stripe().paymentIntents.retrieve(p.stripePaymentIntentId!, {
-        expand: ["payment_method"],
-      });
-      if (!isUnfinished(intent)) {
-        // It has moved on since we last heard (paid, processing, or cancelled).
-        await recordPaymentIntent(intent);
-        continue;
-      }
-      if (due <= 0 || isBelowMinimumPayment(due)) {
-        const cancelled = await stripe().paymentIntents.cancel(intent.id);
-        await recordPaymentIntent(cancelled);
-        await logIntegrationEvent({
-          provider: "stripe",
-          direction: "OUTBOUND",
-          eventType: "payment_intent.cancel",
-          externalId: intent.id,
-          policyId,
-          payload: {
-            reason: due <= 0 ? "Nothing is due after a policy change" : "The amount due is now too small to collect",
-            status: cancelled.status,
-          },
-        });
-      } else if (intent.amount > due) {
-        const updated = await stripe().paymentIntents.update(intent.id, { amount: due });
-        // A declined attempt keeps the amount the customer actually tried to pay.
-        if (p.status === "INITIATED") {
-          await db.payment.update({ where: { id: p.id }, data: { amountCents: due } });
-        }
-        await logIntegrationEvent({
-          provider: "stripe",
-          direction: "OUTBOUND",
-          eventType: "payment_intent.update",
-          externalId: intent.id,
-          policyId,
-          payload: { amount: due, previousAmount: intent.amount, status: updated.status },
-        });
-      }
+      await alignOpenPayment(policyId, p.id);
     } catch (error) {
       // Best effort. If the old amount is paid after all, the extra is refunded on success.
       console.error("Could not update an open payment after a policy change", error);
     }
   }
+}
+
+/**
+ * Brings one open payment into line with the amount due right now: lowered if
+ * less is due, cancelled if nothing is (or too little to collect), and left
+ * alone if more is. Returns the PaymentIntent as it then stands, or null if
+ * the payment has no PaymentIntent.
+ *
+ * The balance is read, and Stripe is told, while holding the lock on the
+ * policy. Every change to a policy's balance takes that lock, so:
+ *
+ *  - the amount sent to Stripe is the balance at that moment, not one read
+ *    earlier; and
+ *  - two updates for the same payment can't overlap. Without this, the update
+ *    for an earlier change could reach Stripe after the update for a later
+ *    one, and put the payment back up above what is due.
+ *
+ * Stripe is called while the lock is held, which the rest of the code avoids.
+ * It is the only way to make "read the balance, then set the amount" one
+ * step, and it holds up only other changes to this same policy, briefly.
+ */
+async function alignOpenPayment(policyId: string, paymentId: string) {
+  const outcome = await db.$transaction(
+    async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${policyId} FOR UPDATE`;
+      const payment = await tx.payment.findUnique({ where: { id: paymentId } });
+      if (!payment?.stripePaymentIntentId) return null;
+      const sum = await tx.ledgerEntry.aggregate({ where: { policyId }, _sum: { amountCents: true } });
+      const due = sum._sum.amountCents ?? 0;
+
+      const intent = await stripe().paymentIntents.retrieve(payment.stripePaymentIntentId, { expand: ["payment_method"] });
+      // It has moved on since we last heard (paid, processing, or cancelled).
+      if (!isUnfinished(intent)) return { intent, record: true };
+
+      if (due <= 0 || isBelowMinimumPayment(due)) {
+        const cancelled = await stripe().paymentIntents.cancel(intent.id);
+        const reason = due <= 0 ? "Nothing is due after a policy change" : "The amount due is now too small to collect";
+        return { intent: cancelled, record: true, log: { eventType: "payment_intent.cancel", payload: { reason, status: cancelled.status } } };
+      }
+      if (intent.amount > due) {
+        const lowered = await stripe().paymentIntents.update(intent.id, { amount: due });
+        // A declined attempt keeps the amount the customer actually tried to pay.
+        if (payment.status === "INITIATED") {
+          await tx.payment.update({ where: { id: payment.id }, data: { amountCents: due } });
+        }
+        return {
+          intent: lowered,
+          record: false,
+          log: { eventType: "payment_intent.update", payload: { amount: due, previousAmount: intent.amount, status: lowered.status } },
+        };
+      }
+      // The same, or more is due. An amount the customer has been shown is never raised.
+      return { intent, record: false };
+    },
+    // Two calls to Stripe happen inside, so allow longer than the default five seconds.
+    { timeout: 30_000, maxWait: 30_000 },
+  );
+  if (!outcome) return null;
+
+  // These take the policy lock themselves, so they run once it has been released.
+  if (outcome.record) await recordPaymentIntent(outcome.intent);
+  if (outcome.log) {
+    await logIntegrationEvent({
+      provider: "stripe",
+      direction: "OUTBOUND",
+      eventType: outcome.log.eventType,
+      externalId: outcome.intent.id,
+      policyId,
+      payload: outcome.log.payload,
+    });
+  }
+  return outcome.intent;
 }
 
 /** A payment the customer could still complete. */

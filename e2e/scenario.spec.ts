@@ -1,4 +1,6 @@
+import "dotenv/config";
 import { expect, test, type Browser, type Page } from "@playwright/test";
+import Stripe from "stripe";
 import { DEMO_PASSWORD } from "../src/lib/demo";
 import { balance, CARD_DECLINED, CARD_OK, fillCard, openPayForm, payButton, payByCard, signIn } from "./helpers";
 
@@ -433,5 +435,38 @@ test("a cancellation dated in the future leaves the policy active until that day
     await expect(page.getByText(`Cancellation takes effect ${shown}`)).toBeVisible();
     await expect(page.locator("section").filter({ has: page.getByRole("heading", { name: "Coverage", exact: true }) })).toContainText("In force");
   }
+});
+
+test("the page shows the policy as paid when checkout finds an earlier payment went through", async ({ browser }) => {
+  const key = process.env.STRIPE_SECRET_KEY ?? "";
+  test.skip(!key, "Needs STRIPE_SECRET_KEY in .env");
+  expect(key.startsWith("sk_test_") || key.startsWith("rk_test_"), "a Stripe test-mode key").toBe(true);
+  const stripe = new Stripe(key);
+
+  const { broker, holder } = await demoPolicy(browser);
+  await moveCyber(broker, -7);
+  await expect(balance(broker)).toHaveText("$14.00");
+
+  // The policyholder's card is declined, which leaves the payment form open for another try.
+  await holder.reload();
+  await payByCard(holder, CARD_DECLINED);
+  await expect(holder.getByTestId("payment-error")).toContainText(/declined/i);
+  await holder.reload();
+  const references = await holder.locator("#payments").getByText(/^pi_\w+$/).allInnerTexts();
+  const declined = references.at(-1)!;
+
+  // A retry on that form goes through at Stripe, and the news hasn't reached the app.
+  // (Stripe's webhooks can't reach this test server, so it stays unheard.)
+  await stripe.paymentIntents.confirm(declined, { payment_method: "pm_card_visa", return_url: "http://localhost:3200/portal" });
+  await holder.reload();
+  await expect(balance(holder)).toHaveText("$14.00");
+
+  // The policyholder presses Pay. Checkout finds the earlier payment and records it. The page
+  // says so and shows nothing due, with no Pay button left to press.
+  await openPayForm(holder);
+  await expect(holder.getByTestId("already-paid")).toHaveText("Your earlier payment went through, so nothing more is due.");
+  await expect(balance(holder)).toHaveText("$0.00");
+  await expect(holder.getByRole("button", { name: /^Pay / })).toHaveCount(0);
+  await expect(holder.locator("#statement").getByText("Payment received (card ending 4242)")).toHaveCount(3);
 });
 
