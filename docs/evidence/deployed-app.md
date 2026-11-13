@@ -1,6 +1,6 @@
 # What the deployed app recorded
 
-Read 2026-11-13 13:33:02 UTC from the deployed app's database (read-only). These are the app's own records of its sandbox activity: the same rows the broker's Integration log page shows.
+Read 2026-11-13 13:41:56 UTC from the deployed app's database (read-only). These are the app's own records of its sandbox activity: the same rows the broker's Integration log page shows.
 
 ## Integration log: every sandbox request sent and webhook received
 
@@ -55,18 +55,6 @@ Read 2026-11-13 13:33:02 UTC from the deployed app's database (read-only). These
 | 2026-11-13 12:38:23 | stripe | Sent | refund.create | re_3UbJk3GiG | SBP-2026-0025 |
 | 2026-11-13 12:38:23 | stripe | Received | refund.created | re_3UbJk3GiG | SBP-2026-0025 |
 | 2026-11-13 12:38:23 | stripe | Received | refund.updated | re_3UbJk3GiG | SBP-2026-0025 |
-| 2026-11-13 12:39:52 | stripe | Sent | payment_intent.create | pi_3UbJlkGiG | SBP-2026-0026 |
-| 2026-11-13 12:39:53 | stripe | Received | payment_intent.succeeded | pi_3UbJlkGiG | SBP-2026-0026 |
-| 2026-11-13 12:39:53 | stripe | Sent | payment_intent.create | pi_3UbJllGiG | SBP-2026-0026 |
-| 2026-11-13 12:39:54 | stripe | Received | payment_intent.succeeded | pi_3UbJllGiG | SBP-2026-0026 |
-| 2026-11-13 12:41:21 | stripe | Sent | payment_intent.create | pi_3UbJnBGiG | SBP-2026-0026 |
-| 2026-11-13 12:41:25 | stripe | Received | payment_intent.succeeded | pi_3UbJnBGiG | SBP-2026-0026 |
-| 2026-11-13 12:41:52 | stripe | Sent | refund.create | re_3UbJnBGiG | SBP-2026-0026 |
-| 2026-11-13 12:41:52 | stripe | Sent | refund.create | re_3UbJllGiG | SBP-2026-0026 |
-| 2026-11-13 12:41:53 | stripe | Received | refund.created | re_3UbJnBGiG | SBP-2026-0026 |
-| 2026-11-13 12:41:53 | stripe | Received | refund.updated | re_3UbJllGiG | SBP-2026-0026 |
-| 2026-11-13 12:41:54 | stripe | Received | refund.updated | re_3UbJnBGiG | SBP-2026-0026 |
-| 2026-11-13 12:41:54 | stripe | Received | refund.created | re_3UbJllGiG | SBP-2026-0026 |
 | 2026-11-13 13:06:55 | stripe | Sent | payment_intent.create | pi_3UbKBuGiG | SBP-2026-0027 |
 | 2026-11-13 13:06:56 | stripe | Sent | payment_intent.create | pi_3UbKBwGiG | SBP-2026-0027 |
 | 2026-11-13 13:06:57 | stripe | Received | payment_intent.succeeded | pi_3UbKBuGiG | SBP-2026-0027 |
@@ -86,14 +74,12 @@ Read 2026-11-13 13:33:02 UTC from the deployed app's database (read-only). These
 |---|---|---|---|---|---|
 | 2026-10-01 17:00:00 | Payment | Succeeded | $1,095.00 | SBP-2026-0003 | pi_3UawoXGiG |
 | 2026-10-01 17:00:00 | Payment | Succeeded | $1,095.00 | SBP-2026-0012 | pi_3Ub6OZGiG |
-| 2026-10-02 17:00:00 | Payment | Succeeded | $1,095.00 | SBP-2026-0026 | pi_3UbJlkGiG |
 | 2026-10-02 17:00:00 | Payment | Succeeded | $1,095.00 | SBP-2026-0025 | pi_3UbJk1GiG |
 | 2026-10-02 17:00:00 | Payment | Succeeded | $1,095.00 | SBP-2026-0027 | pi_3UbKBuGiG |
-| 2026-10-22 17:00:00 | Payment | Succeeded | $674.00 | SBP-2026-0012 | pi_3Ub6OaGiG |
 | 2026-10-22 17:00:00 | Payment | Succeeded | $674.00 | SBP-2026-0003 | pi_3UawoZGiG |
-| 2026-10-23 17:00:00 | Payment | Succeeded | $674.00 | SBP-2026-0026 | pi_3UbJllGiG |
-| 2026-10-23 17:00:00 | Payment | Succeeded | $674.00 | SBP-2026-0027 | pi_3UbKBwGiG |
+| 2026-10-22 17:00:00 | Payment | Succeeded | $674.00 | SBP-2026-0012 | pi_3Ub6OaGiG |
 | 2026-10-23 17:00:00 | Payment | Succeeded | $674.00 | SBP-2026-0025 | pi_3UbJk3GiG |
+| 2026-10-23 17:00:00 | Payment | Succeeded | $674.00 | SBP-2026-0027 | pi_3UbKBwGiG |
 | 2026-11-12 12:09:21 | Refund | Succeeded | $941.00 | SBP-2026-0003 | re_3UawoXGiG |
 | 2026-11-12 12:09:21 | Refund | Succeeded | $674.00 | SBP-2026-0003 | re_3UawoZGiG |
 | 2026-11-12 12:42:34 | Payment | Failed | $1,095.00 | SBP-2026-0002 | pi_3UaxKoGiG |
@@ -103,11 +89,8 @@ Read 2026-11-13 13:33:02 UTC from the deployed app's database (read-only). These
 | 2026-11-12 22:23:10 | Payment | Failed | $14.00 | SBP-2026-0012 | pi_3Ub6OgGiG |
 | 2026-11-13 09:20:40 | Refund | Succeeded | $14.00 | SBP-2026-0002 | re_3UaxL0GiG |
 | 2026-11-13 12:38:16 | Payment | Succeeded | $14.00 | SBP-2026-0025 | pi_3UbJkCGiG |
-| 2026-11-13 12:38:21 | Refund | Succeeded | $14.00 | SBP-2026-0025 | re_3UbJk3GiG |
 | 2026-11-13 12:38:21 | Refund | Succeeded | $14.00 | SBP-2026-0025 | re_3UbJkCGiG |
-| 2026-11-13 12:41:21 | Payment | Succeeded | $14.00 | SBP-2026-0026 | pi_3UbJnBGiG |
-| 2026-11-13 12:41:51 | Refund | Succeeded | $14.00 | SBP-2026-0026 | re_3UbJllGiG |
-| 2026-11-13 12:41:51 | Refund | Succeeded | $14.00 | SBP-2026-0026 | re_3UbJnBGiG |
+| 2026-11-13 12:38:21 | Refund | Succeeded | $14.00 | SBP-2026-0025 | re_3UbJk3GiG |
 | 2026-11-13 13:08:23 | Payment | Succeeded | $14.00 | SBP-2026-0027 | pi_3UbKDLGiG |
 | 2026-11-13 13:08:52 | Refund | Succeeded | $14.00 | SBP-2026-0027 | re_3UbKDLGiG |
 | 2026-11-13 13:08:52 | Refund | Succeeded | $14.00 | SBP-2026-0027 | re_3UbKBwGiG |
