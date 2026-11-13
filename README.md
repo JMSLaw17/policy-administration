@@ -2,13 +2,13 @@
 
 A platform for managing commercial insurance policies, built for a 48-hour work trial. A **broker** issues a policy, changes its coverage mid-term, corrects mistakes, and cancels it. A **policyholder** sees their coverage, pays what they owe, and reads a statement that explains every charge, payment, and refund.
 
-The idea the whole app is built around: **nothing on the statement is ever edited.** Every action posts new lines, and a mistake is fixed by reversing the wrong line and posting the right one beside it. That is what lets a reviewer trace any amount back to the action and the payment behind it.
+The app is built around one rule: **nothing on the statement is ever edited.** Every action posts new lines, and a mistake is fixed by reversing the wrong line and posting the right one beside it. That is why any amount can be traced back to the action and the payment behind it.
 
 - **Track:** 1, policy administration
 - **Deployed app:** https://policy-administration.vercel.app
-- **Decision log:** [DECISIONS.md](DECISIONS.md), each entry timestamped, with every assumption marked
+- **Video:** link to be added. The script is in [docs/video-script.md](docs/video-script.md), and `npm run video` records it ([docs/video.md](docs/video.md)).
 - **Integration evidence:** [docs/evidence](docs/evidence/README.md)
-- **Video script:** [docs/video-script.md](docs/video-script.md), and `npm run video` records it ([docs/video.md](docs/video.md))
+- **Decision log:** [DECISIONS.md](DECISIONS.md), each entry timestamped, with every assumption marked
 
 ## Sign in
 
@@ -29,9 +29,9 @@ Creating a customer as the broker also creates a policyholder login with that cu
 2. In **Policy history**, click **Correct this** on entry #2 (the Cyber change). Move the effective date a week earlier and click **Preview correction**.
 3. The preview shows exactly what will be posted: a reversal of the original charge, the new charge with its formula, and the new amount due of **$14.00**. Confirm it.
 4. The statement now shows the original charge struck through and marked "Superseded by correction #3", the reversal, and the corrected charge. The history entry explains it in plain English: *"Cyber Liability now counts 7 more days … at $2.00 a day … In total, $14.00 more is owed."*
-5. Sign in as the policyholder shown on the customer's page. They see the same statement and explanation, and a **Pay $14.00** button with a "Why this is due" note beside it that repeats the correction in plain English. Its rows always add up to the amount on the button.
+5. Sign in as the policyholder shown on the customer's page. They see the same statement and explanation, and a **Pay $14.00** button with a "Why this is due" note beside it.
 
-**Change the date to anything else** and the same thing happens. A later date gives the customer a credit, which the app refunds to the payment it came from, through Stripe, without anyone clicking anything. The same action can be corrected again and again; each correction starts from the current state.
+**Change the date to anything else** and the same thing happens. A later date gives the customer a credit, which the app refunds through Stripe to the payment it came from, without anyone clicking anything. The same action can be corrected again, and each correction starts from the current state.
 
 **The calculation**, which every statement line shows under "How was this calculated?":
 
@@ -72,25 +72,25 @@ Also built: correcting any past action (including the original issue), editing c
 
 These rules live in `src/lib/engine` (pure functions, no database) and are used by every screen.
 
-1. **Whole cents, in USD.** No floating-point dollars anywhere.
+1. **Whole cents, in USD.** No floating-point dollars.
 2. **Daily pro-rata.** `annual premium × days covered ÷ days in term`. The start date counts and the end date doesn't. Every policy runs 12 months, so the term is 365 days, or 366 across a Feb 29.
 3. **Rounded per line.** Each line is rounded to the cent, halves up, and totals are sums of rounded lines.
-4. **Append-only.** Issue, coverage change, correction, and cancellation each post new lines. A correction reverses the affected lines and posts new ones. Rows are never updated or deleted.
-5. **One calculation, replayed.** Premium is always worked out by replaying the policy's history (`replay.ts`). A correction replays it with the corrected action in place, compares the result with the statement, and posts only the difference. A correction that would break a later action is refused with an explanation.
-6. **Balance = charges − payments + refunds.** Positive is the amount due. Negative is a credit, which first absorbs anything else owed and is then refunded to the payment it came from.
-7. **Stripe decides what was paid.** A payment or refund reaches the statement only when Stripe's servers confirm it, by webhook or by a direct status check. Hearing about it twice posts one line.
+4. **Append-only.** Issue, coverage change, correction, and cancellation each post new lines. Rows are never updated or deleted.
+5. **One calculation, replayed.** Premium is worked out by replaying the policy's history. A correction replays it with the corrected action in place, compares the result with the statement, and posts only the difference. A correction that would break a later action is refused with an explanation.
+6. **Balance = premium charged − payments + refunds.** Positive is the amount due. Negative is a credit, which is refunded to the payment it came from.
+7. **Stripe decides what was paid.** A payment or refund reaches the statement only when Stripe's servers confirm it, by webhook or by a direct status check.
 8. **Cancellation is pro-rata with no penalty.** Refund = paid − earned.
-9. **Nothing is charged, refunded, or issued twice, and nothing is saved that wasn't shown.**
-   - A policy has one open payment attempt, so two checkout tabs share one Stripe payment.
-   - A refund is saved before Stripe is contacted and resumed with the same key until its outcome is known, so an interruption can neither strand a credit nor refund it twice.
-   - A signed application issues exactly one policy, at the prices on the signed document, and a renewal is created only if it is still the one the broker was shown.
-   - A declined payment attempt is settled with Stripe before another is offered, so a retry that went through is never collected a second time.
-   - An amount shown on a Pay button is never raised, and a completed payment is never set back to pending by late news.
-   - A refund that fails after Stripe first reported it succeeded, or money the bank later takes back from a payment, is put right by a new line on the statement, once per event, and the original line stays. News that arrives out of order is handled: a return that comes before its payment waits for it, and a failed refund is never marked succeeded again.
-   - A preview is shown only if the form hasn't changed since it was asked for, so what is confirmed is what is on screen.
-10. **Less than $0.50 can't be collected.** Stripe's minimum charge is $0.50. A smaller amount due stays on the statement and is collected with the next payment.
-   - The Pay button shows the amount Stripe holds, and asks the customer to agree if it has changed since they last saw it.
-   - A broker's confirmation is refused, and the new figures shown, if a payment or another change landed after the preview.
+9. **Less than $0.50 isn't collected.** That is Stripe's minimum charge. A smaller amount stays on the statement and is collected with the next payment.
+
+### Safeguards
+
+Payments, refunds, and webhooks can overlap, repeat, or arrive out of order. These hold whatever the timing:
+
+- **Nothing is charged twice.** A policy has one open payment at a time. A declined attempt is settled with Stripe before another is offered. A payment's amount is never changed: if the amount due changes, the payment is cancelled and a new one started.
+- **Nothing is refunded twice, or lost.** A refund is saved before Stripe is contacted and resumed with the same key until its outcome is known.
+- **Nothing is issued twice.** A signed application issues exactly one policy, at the prices on the signed document.
+- **What is confirmed is what was shown.** A broker's confirmation is refused, and the new figures shown, if anything changed after the preview. The Pay button shows the amount Stripe holds and asks the customer to agree if it has changed.
+- **Money that comes back is put right on the statement.** A refund that fails after first succeeding, or a payment the bank takes back, gets a new line, once, and the original line stays.
 
 ## Integrations: what is live and what is simulated
 
@@ -110,21 +110,40 @@ The demo scenario button skips the DocuSign signature and backdates its own hist
 
 ## What we simplified
 
-- **Pay in full only, no installments.** This is the choice we'd most like to discuss. Installments multiply the states of "amount due" (scheduled, due, overdue, partly paid) without exercising anything new in the pro-rata logic the brief focuses on. Pay-in-full keeps one balance per policy, so every amount stays easy to trace.
-- **One product, flat prices.** A Small Business Package with three coverages at fixed annual prices. No rating factors such as industry, revenue, limits, or deductibles.
-- **No taxes, fees, or surcharges.**
-- **Rounding is per line.** A policy cancelled from its first day is the one case where a line is adjusted, by a cent at most, so that a policy that never covered a day comes to exactly zero.
-- **A loss on a claim can be entered up to $20,000,000.00.** A larger figure goes in the description. No payout is affected, since the highest per-claim limit is $1,000,000.00.
-- **No small-balance write-off.** A few cents left due are carried to the next payment, not written off.
-- **Disputes** are handled only once they are lost: a returned bank payment, or a card chargeback the customer won. An open card dispute isn't shown.
-- **No short-rate penalty or minimum earned premium** on cancellation.
-- **Fixed 12-month term.** No short-term policies or term extensions.
-- **Renewals** can be created at any time and need no new application. A real system offers them 60 to 90 days out, sends a notice, and lapses an unpaid renewal after a grace period. We show the premium as due on the new term's start date and stop there.
-- **Claims** have one flat deductible and a per-claim limit. No reserves, partial payments, or annual aggregate limits. A claim can be filed and approved while premium is still unpaid, because cover stays in force until the policy is cancelled. The broker is shown the unpaid amount when deciding, but unpaid premium isn't deducted from the payout, and there is no cancellation for non-payment.
-- **Commission** is earned when premium is charged, not when it is collected.
-- **Sign-in** is two seeded demo roles with a shared password. No sign-up, password reset, or single sign-on.
+Each choice below left something out on purpose. The reasoning for each is in [DECISIONS.md](DECISIONS.md).
 
-Each of these is recorded with its reasoning in [DECISIONS.md](DECISIONS.md).
+**The one we'd most like to discuss**
+
+- **Pay in full only, no installments.** Installments multiply the states of "amount due" (scheduled, due, overdue, partly paid) without exercising anything new in the pro-rata logic the brief focuses on. Paying in full keeps one balance per policy, so every amount stays easy to trace.
+
+**Product and pricing**
+
+- **One product with three coverages at fixed prices, set in code.** There is no screen to add a coverage or change a price, and no rating by industry, revenue, limits, or deductibles. Setting up products and rates is a separate job from administering policies, and fixed prices keep every formula checkable by hand.
+- **No taxes, fees, or surcharges.** Each would need its own refund rule, which adds rules without adding to the pro-rata logic.
+- **Fixed 12-month term.** No short-term policies or extensions, so a full term always costs exactly the annual premium.
+
+**Policy changes**
+
+- **A cancellation can't be undone.** A policy cancelled by mistake is handled by correcting the cancellation date, or by issuing a new policy. Reinstatement has its own rules (lapse in cover, back premium) that we left out.
+- **No short-rate penalty or minimum earned premium** on cancellation. Pro-rata is the simplest rule to state and to verify.
+- **Renewals** can be created at any time and need no new application. A real system offers them 60 to 90 days out, sends a notice, and lapses an unpaid renewal after a grace period.
+
+**Money**
+
+- **Rounding is per line.** The one exception is a policy cancelled from its first day, where a line is adjusted by at most a cent so that a policy that never covered a day comes to exactly zero.
+- **No small-balance write-off.** A few cents left due are carried to the next payment. Writing them off would need a rule for who approves it.
+- **A disputed payment is reflected only once the dispute is lost,** which covers a bank debit that is returned and a card chargeback that goes against us. A card dispute that is still open isn't shown, because the money may come back.
+- **Commission** is earned when premium is charged, not when it is collected, and paying it out isn't modelled.
+
+**Claims**
+
+- **One flat deductible and a per-claim limit.** No reserves, partial payments, or annual aggregate limits.
+- **A claim doesn't depend on premium being paid,** because cover stays in force until a policy is cancelled. The broker is shown the unpaid amount when deciding, but it isn't deducted from the payout, and there is no cancellation for non-payment.
+- **A loss can be entered up to $20,000,000.00.** No payout is affected, since the highest per-claim limit is $1,000,000.00.
+
+**Accounts**
+
+- **Two roles, with seeded demo logins and a shared password.** A broker can create a customer, which creates that customer's login. There is no self sign-up, password reset, second broker, or single sign-on. Managing users is outside policy administration, and reviewers only need to sign in as each role.
 
 ## What we'd build next
 
@@ -142,8 +161,8 @@ Each of these is recorded with its reasoning in [DECISIONS.md](DECISIONS.md).
 | Command | What it covers |
 |---|---|
 | `npm run check` | Typecheck, lint, and `npm test`: the money rules, the whole workflow against a local test database (including the scenario above), and the payment rules with a stand-in for Stripe. |
-| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, two checkouts at once, a refund resumed after an interruption, a refund that Stripe accepts and then fails (this one waits about two minutes for Stripe), a payment that is disputed and lost, a declined card retried on the same form, and the demo scenario. |
-| `npm run test:e2e` | A real browser (Playwright) running the scenario end to end, typing test cards into Stripe's own card form. Also covers the amount changing while the pay form is open, and a payment landing between a broker's preview and confirmation. |
+| `npm run test:stripe` | The real payment and refund code against Stripe's test mode: card and bank payments, a declined card and a retry, refunds after a correction and a cancellation, a refund that fails after succeeding, a disputed payment, overlapping checkouts and changes, and the demo scenario. Takes about three minutes. |
+| `npm run test:e2e` | A real browser (Playwright) running the scenario end to end, typing test cards into Stripe's own card form. Also covers previews and payments that change while a form is open. |
 | `npm run smoke` | Signs in to the deployed site as each role and opens the main pages. Read-only. |
 | `npm run test:deployed` | Refunds, claims, cancellation, renewal, and a payment taken back by the bank, in a browser against the deployed site. Changes data. |
 | `npm run prod:query` | A read-only summary of the deployed database, for confirming results. |
