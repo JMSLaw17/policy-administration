@@ -495,6 +495,34 @@ describe("a policy and its renewal", () => {
     expect(preview.renewal).toMatchObject({ chosen: "KEEP", gapIfKept: { days: 153 } });
   });
 
+  it("refuses a confirmation if the gap being agreed to has changed since the preview", async () => {
+    const { policy, renewal } = await renewed();
+    const cancel = {
+      kind: "CANCELLATION" as const,
+      effectiveDate: "2027-04-01",
+      renewal: "KEEP" as const,
+      reason: "Seasonal business, back in October",
+    };
+    // The broker previews cancelling from April 1 and keeping the renewal: 183 days without cover.
+    const previewed = await previewChange(policy.id, cancel);
+    expect(previewed.renewal).toMatchObject({ chosen: "KEEP", gapIfKept: { from: "2027-04-01", to: "2027-10-01", days: 183 } });
+
+    // Meanwhile the renewal is moved a month later. No amount on this policy changes,
+    // but the gap the broker would be agreeing to is now 214 days.
+    await moveStart(renewal.id, "2027-11-01", { reason: "Customer asked to restart in November" });
+    const refused = await applyChange(policy.id, cancel, brokerId, previewed.fingerprint).catch((e) => e);
+    expect(refused).toBeInstanceOf(PreviewChangedError);
+    const fresh = (refused as PreviewChangedError).preview;
+    expect(fresh.renewal).toMatchObject({ chosen: "KEEP", gapIfKept: { from: "2027-04-01", to: "2027-11-01", days: 214 } });
+    expect((await loadPolicyView(policy.id))!.status).toBe("ACTIVE"); // nothing was saved
+
+    // Shown the longer gap, the broker confirms it.
+    await applyChange(policy.id, cancel, brokerId, fresh.fingerprint);
+    expect(await loadPolicyView(renewal.id)).toMatchObject({
+      gaps: [{ side: "BEFORE", from: "2027-04-01", to: "2027-11-01", days: 214 }],
+    });
+  });
+
   it("moves a whole chain of renewals together", async () => {
     const { policy, renewal } = await renewed();
     const second = await renewPolicy(renewal.id, brokerId);
@@ -608,6 +636,25 @@ describe("claims", () => {
 
   it("uses today's date sensibly", () => {
     expect(todayISO()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe("a very large loss", () => {
+  it("is refused with a clear message when it is more than can be stored, and accepted up to that", async () => {
+    const policy = await issue();
+    const file = (claimedCents: number) =>
+      fileClaim({ policyId: policy.id, coverageCode: "GL", lossDate: "2026-10-15", description: "Fire", claimedCents, userId: brokerId });
+
+    // $25,000,000.00 used to pass validation and then fail in the database.
+    await expect(file(2_500_000_000)).rejects.toThrow(
+      "The largest loss that can be entered is $20,000,000.00. For a larger loss, enter $20,000,000.00 and give the full figure in the description. The payout is the same either way, because General Liability pays at most $1,000,000.00 for one claim.",
+    );
+    expect(await db.claim.count()).toBe(0);
+
+    // The largest amount that can be entered is saved, and pays out the coverage's limit.
+    const claim = await file(2_000_000_000);
+    const approved = await decideClaim(claim.id, { decision: "APPROVE", approvedLossCents: 2_000_000_000 }, brokerId);
+    expect(approved).toMatchObject({ status: "APPROVED", claimedCents: 2_000_000_000, payoutCents: 100_000_000 });
   });
 });
 
@@ -865,6 +912,46 @@ describe("issuing from a signed application", () => {
     await expect(issueFromApplication(application.id, brokerId)).rejects.toThrow(/already been issued/);
     expect(await db.policy.count()).toBe(1);
     expect((await db.application.findUniqueOrThrow({ where: { id: application.id } })).policyId).toBe(policy.id);
+  });
+
+  it("issues at the prices the customer signed for, even if the rate table has changed since", async () => {
+    // Signed when General Liability was $1,000.00 a year. Today's rate table says $1,095.00.
+    const application = await db.application.create({
+      data: {
+        customerId,
+        startDate: new Date("2026-10-01"),
+        coverageCodes: ["GL"],
+        premiumCents: 100_000,
+        signedRates: [{ code: "GL", annualPremiumCents: 100_000 }],
+        status: "SIGNED",
+        signedAt: new Date(),
+        signerName: "Tess Tester",
+        signerEmail: "tess@test-bakery.test",
+        signerUserId: brokerId,
+        createdById: brokerId,
+      },
+    });
+    const policy = await issueFromApplication(application.id, brokerId);
+
+    const view = (await loadPolicyView(policy.id))!;
+    expect(view.balanceCents).toBe(100_000);
+    expect(view.statement[0]).toMatchObject({ kind: "CHARGE", amountCents: 100_000, calc: { annualPremiumCents: 100_000 } });
+    expect(view.coverage).toMatchObject([{ code: "GL", annualPremiumCents: 100_000 }]);
+    // A coverage added later, which wasn't on the application, is priced from today's table.
+    await addCyber(policy.id, "2026-11-01");
+    expect((await loadPolicyView(policy.id))!.balanceCents).toBe(100_000 + 66_800);
+  });
+
+  it("refuses an older application whose signed total no longer matches today's prices", async () => {
+    // Sent before prices were saved with the application: only the signed total is known.
+    const application = await signedApplication();
+    await db.application.update({ where: { id: application.id }, data: { premiumCents: 100_000 } });
+
+    await expect(issueFromApplication(application.id, brokerId)).rejects.toThrow(
+      "Prices have changed since this application was signed: it was signed for $1,000.00 and would now be $1,095.00. Send a new application for signature.",
+    );
+    expect(await db.policy.count()).toBe(0);
+    expect((await db.application.findUniqueOrThrow({ where: { id: application.id } })).status).toBe("SIGNED");
   });
 
   it("leaves the application signed, with no policy, if issuing fails part-way", async () => {

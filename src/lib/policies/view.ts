@@ -280,8 +280,9 @@ export async function loadPolicyView(policyId: string) {
           envelopeId: policy.application.docusignEnvelopeId,
         }
       : null,
-    // Premium falls due when the term starts. Until then it can be paid early
-    // but isn't overdue. This matters for renewals, which are created ahead of time.
+    // Premium falls due when the term starts (PREMIUM_DUE_RULE, the same rule the signed
+    // application states). Until then it can be paid early but isn't overdue. This matters
+    // for renewals, which are created ahead of time.
     dueDate: state.startDate > todayISO() ? state.startDate : null,
     demoLoadedAt: policy.demoLoadedAt?.toISOString() ?? null,
     renewedFrom: policy.renewedFrom && { id: policy.renewedFrom.id, policyNumber: policy.renewedFrom.policyNumber },

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { formatDate, fromJSDate, policyStanding, todayISO, type ISODate } from "@/lib/engine";
 
 export const inputClass =
   "mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500";
@@ -83,3 +84,35 @@ export function ButtonLabel({ pending, children }: { pending: boolean; children:
     </>
   );
 }
+
+/**
+ * Where a policy stands today, as a badge. Worked out from its dates, not from
+ * whether a cancellation has been entered: a policy with a cancellation dated
+ * next month is still active, and says when it will be cancelled.
+ */
+export function PolicyStatus({
+  startDate,
+  endDate,
+  cancelledEffective,
+}: {
+  startDate: ISODate | Date;
+  endDate: ISODate | Date;
+  cancelledEffective: ISODate | Date | null;
+}) {
+  const iso = (date: ISODate | Date) => (typeof date === "string" ? date : fromJSDate(date));
+  const start = iso(startDate);
+  const standing = policyStanding(
+    { startDate: start, endDate: iso(endDate), cancelledEffective: cancelledEffective ? iso(cancelledEffective) : null },
+    todayISO(),
+  );
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5" data-testid="policy-status">
+      {standing.kind === "ACTIVE" && <Badge tone="green">Active</Badge>}
+      {standing.kind === "UPCOMING" && <Badge tone="indigo">Starts {formatDate(start)}</Badge>}
+      {standing.kind === "CANCELLED" && <Badge tone="red">Cancelled</Badge>}
+      {standing.kind === "EXPIRED" && <Badge>Expired</Badge>}
+      {standing.cancelsOn && <Badge tone="amber">Cancels {formatDate(standing.cancelsOn)}</Badge>}
+    </span>
+  );
+}
+

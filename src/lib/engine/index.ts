@@ -5,5 +5,6 @@ export * from "./explain";
 export * from "./money";
 export * from "./refunds";
 export * from "./replay";
+export * from "./standing";
 export * from "./types";
 export * from "./extensions";

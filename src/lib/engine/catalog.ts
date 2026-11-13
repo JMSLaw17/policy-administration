@@ -17,6 +17,23 @@ export type CoverageDefinition = {
 /** The part of every approved loss the customer bears themselves. */
 export const CLAIM_DEDUCTIBLE_CENTS = 50_000;
 
+/**
+ * The largest loss that can be entered on a claim: $20,000,000.00. Amounts
+ * are stored as whole cents in a 32-bit column, which holds a little over
+ * $21 million. No payout is affected: the most any coverage pays is its
+ * per-claim limit, and the highest limit is $1,000,000.00.
+ */
+export const MAX_CLAIM_CENTS = 2_000_000_000;
+
+/**
+ * When premium falls due. One rule, stated on the application the policyholder
+ * signs and applied on the policy page: a policy whose term hasn't started
+ * shows its premium as due on the first day of the term, and one whose term
+ * has started shows it as due now.
+ */
+export const PREMIUM_DUE_RULE =
+  "The premium is due in full on the first day of the policy term, or on the day the policy is issued if that is later.";
+
 /** The broker's commission on premium, in basis points. 1000 = 10%. */
 export const COMMISSION_RATE_BPS = 1000;
 

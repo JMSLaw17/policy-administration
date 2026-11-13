@@ -36,6 +36,8 @@ const fake = vi.hoisted(() => ({
   refundFault: null as null | "lost" | "rejected",
   /** The state Stripe reports for a new refund. A bank refund starts as "pending". */
   refundStatus: "succeeded",
+  /** Makes the next attempt to cancel a payment fail, as when the connection drops. */
+  cancelFails: false,
   /** Disputes as Stripe holds them, by id. */
   disputes: new Map<string, unknown>(),
 }));
@@ -58,7 +60,14 @@ vi.mock("@/lib/integrations/stripe", async () => {
         },
         retrieve: async (id: string) => fake.intents.get(id)!,
         update: async (id: string, data: { amount: number }) => Object.assign(fake.intents.get(id)!, data),
-        cancel: async (id: string) => Object.assign(fake.intents.get(id)!, { status: "canceled" }),
+        cancel: async (id: string) => {
+          const intent = fake.intents.get(id)!;
+          if (fake.cancelFails || intent.status === "succeeded") {
+            fake.cancelFails = false;
+            throw new Stripe.errors.StripeConnectionError({ type: "api_error", message: "Could not cancel." });
+          }
+          return Object.assign(intent, { status: "canceled" });
+        },
       },
       refunds: {
         create: async (data: Omit<FakeRefund, "id" | "status">, options: { idempotencyKey: string }) => {
@@ -123,6 +132,7 @@ beforeEach(async () => {
   fake.byKey.clear();
   fake.refundFault = null;
   fake.refundStatus = "succeeded";
+  fake.cancelFails = false;
   fake.disputes.clear();
 });
 
@@ -334,6 +344,55 @@ describe("starting a payment", () => {
     const reopened = await startPayment(policyId);
     expect(reopened).toEqual({ clientSecret: "pi_1_secret", amountCents: GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER });
     expect(fake.intents.get("pi_1")!.amount).toBe(reopened.amountCents);
+  });
+});
+
+describe("opening checkout again after a declined card", () => {
+  it("records a retry that went through on the old form, and doesn't offer a second payment", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "requires_payment_method", "FAILED");
+    // The customer tries again on the same form and it goes through. Stripe knows. We haven't heard yet.
+    Object.assign(intent, { status: "succeeded", amount_received: intent.amount });
+
+    // Checkout is opened again before the news arrives. The old attempt is checked first.
+    await expect(startPayment(policyId)).rejects.toThrow("Your earlier payment went through, so nothing more is due.");
+    expect(fake.intents.size).toBe(1); // no second PaymentIntent, so nothing can be collected twice
+    expect(await db.payment.findMany({ where: { policyId }, select: { id: true, status: true } })).toEqual([
+      { id: paymentId, status: "SUCCEEDED" },
+    ]);
+    expect(await balance(policyId)).toBe(0);
+    expect(fake.refunds).toHaveLength(0);
+  });
+
+  it("doesn't offer a new payment while the old one is being processed", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "requires_payment_method", "FAILED");
+    intent.status = "processing";
+
+    await expect(startPayment(policyId)).rejects.toThrow("A payment is already being processed.");
+    expect(fake.intents.size).toBe(1);
+    expect((await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).status).toBe("PENDING");
+  });
+
+  it("doesn't offer a new payment if closing the old one can't be confirmed", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "requires_payment_method", "FAILED");
+    fake.cancelFails = true;
+
+    await expect(startPayment(policyId)).rejects.toThrow("We couldn't close your earlier payment attempt");
+    expect(fake.intents.size).toBe(1);
+    expect(await db.payment.count({ where: { policyId } })).toBe(1);
+
+    // Trying again closes the old attempt and starts a new one, as before.
+    const started = await startPayment(policyId);
+    expect(intent.status).toBe("canceled");
+    expect(started.clientSecret).toBe("pi_2_secret");
+    expect(
+      await db.payment.findMany({ where: { policyId }, orderBy: { createdAt: "asc" }, select: { status: true, failureReason: true } }),
+    ).toEqual([
+      { status: "FAILED", failureReason: "Your card was declined." },
+      { status: "INITIATED", failureReason: null },
+    ]);
   });
 });
 

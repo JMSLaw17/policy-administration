@@ -83,7 +83,8 @@ These rules live in `src/lib/engine` (pure functions, no database) and are used 
 9. **Nothing is charged, refunded, or issued twice, and nothing is saved that wasn't shown.**
    - A policy has one open payment attempt, so two checkout tabs share one Stripe payment.
    - A refund is saved before Stripe is contacted and resumed with the same key until its outcome is known, so an interruption can neither strand a credit nor refund it twice.
-   - A signed application issues exactly one policy, and a renewal is created only if it is still the one the broker was shown.
+   - A signed application issues exactly one policy, at the prices on the signed document, and a renewal is created only if it is still the one the broker was shown.
+   - A declined payment attempt is settled with Stripe before another is offered, so a retry that went through is never collected a second time.
    - An amount shown on a Pay button is never raised, and a completed payment is never set back to pending by late news.
    - A refund that fails after Stripe first reported it succeeded, or money the bank later takes back from a payment, is put right by a new line on the statement, once per event, and the original line stays. News that arrives out of order is handled: a return that comes before its payment waits for it, and a failed refund is never marked succeeded again.
    - A preview is shown only if the form hasn't changed since it was asked for, so what is confirmed is what is on screen.
@@ -112,6 +113,8 @@ The demo scenario button skips the DocuSign signature and backdates its own hist
 - **Pay in full only, no installments.** This is the choice we'd most like to discuss. Installments multiply the states of "amount due" (scheduled, due, overdue, partly paid) without exercising anything new in the pro-rata logic the brief focuses on. Pay-in-full keeps one balance per policy, so every amount stays easy to trace.
 - **One product, flat prices.** A Small Business Package with three coverages at fixed annual prices. No rating factors such as industry, revenue, limits, or deductibles.
 - **No taxes, fees, or surcharges.**
+- **Rounding is per line.** A policy cancelled from its first day is the one case where a line is adjusted, by a cent at most, so that a policy that never covered a day comes to exactly zero.
+- **A loss on a claim can be entered up to $20,000,000.00.** A larger figure goes in the description. No payout is affected, since the highest per-claim limit is $1,000,000.00.
 - **No small-balance write-off.** A few cents left due are carried to the next payment, not written off.
 - **Disputes** are handled only once they are lost: a returned bank payment, or a card chargeback the customer won. An open card dispute isn't shown.
 - **No short-rate penalty or minimum earned premium** on cancellation.
@@ -139,7 +142,7 @@ Each of these is recorded with its reasoning in [DECISIONS.md](DECISIONS.md).
 | Command | What it covers |
 |---|---|
 | `npm run check` | Typecheck, lint, and `npm test`: the money rules, the whole workflow against a local test database (including the scenario above), and the payment rules with a stand-in for Stripe. |
-| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, two checkouts at once, a refund resumed after an interruption, a refund that Stripe accepts and then fails (this one waits about two minutes for Stripe), a payment that is disputed and lost, and the demo scenario. |
+| `npm run test:stripe` | The real payment and refund code against Stripe's test mode through its API: a declined card, a card payment, refunds after a correction and a cancellation, a pending bank payment, two checkouts at once, a refund resumed after an interruption, a refund that Stripe accepts and then fails (this one waits about two minutes for Stripe), a payment that is disputed and lost, a declined card retried on the same form, and the demo scenario. |
 | `npm run test:e2e` | A real browser (Playwright) running the scenario end to end, typing test cards into Stripe's own card form. Also covers the amount changing while the pay form is open, and a payment landing between a broker's preview and confirmation. |
 | `npm run smoke` | Signs in to the deployed site as each role and opens the main pages. Read-only. |
 | `npm run test:deployed` | Refunds, claims, cancellation, renewal, and a payment taken back by the bank, in a browser against the deployed site. Changes data. |

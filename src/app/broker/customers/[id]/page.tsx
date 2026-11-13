@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { BackLink, Badge, Card } from "@/components/ui";
+import { BackLink, Card, PolicyStatus } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { formatDate, fromJSDate, todayISO } from "@/lib/engine";
@@ -63,7 +63,7 @@ export default async function CustomerPage(props: PageProps<"/broker/customers/[
                 <span className="text-slate-600">
                   {formatDate(fromJSDate(p.startDate))} to {formatDate(fromJSDate(p.endDate))}
                 </span>
-                {p.status === "ACTIVE" ? <Badge tone="green">Active</Badge> : <Badge tone="red">Cancelled</Badge>}
+                <PolicyStatus startDate={p.startDate} endDate={p.endDate} cancelledEffective={p.cancelledEffective} />
               </li>
             ))}
           </ul>

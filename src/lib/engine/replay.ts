@@ -19,7 +19,9 @@ import {
  *  - Removing a coverage from date D credits rate × days(D → its end)  ÷ term days.
  *  - Cancelling on date D credits every coverage for its days after D.
  *
- * Each line is rounded to the cent on its own. Nothing is ever re-rounded.
+ * Each line is rounded to the cent on its own. Nothing is ever re-rounded,
+ * with one exception: a policy cancelled from its first day covered nothing,
+ * so its lines are made to come to exactly zero (see the cancellation below).
  *
  * `history` is the effective history in the order the actions were taken. If
  * an action was later corrected, the corrected version sits in its place.
@@ -163,6 +165,32 @@ export function replay(history: HistoryItem[]): PolicyState {
       }
       state.intervals = state.intervals.filter((i) => i.from < i.to);
       state.cancelledEffective = date;
+
+      // Cancelled from the first day: no day was ever covered, so nothing may
+      // be left owing, or left as a credit. Lines rounded on their own can miss
+      // by a cent (a coverage added and removed mid-term is a charge and two
+      // credits, each rounded separately). So for each coverage, the last
+      // credit is moved by whatever is needed to bring its lines to zero, and
+      // the line records that it was.
+      if (date === startDate) {
+        const earlier = [...state.linesByEvent.values()].flat();
+        for (const code of new Set(earlier.map((l) => l.coverageCode))) {
+          const net = [...earlier, ...lines]
+            .filter((l) => l.coverageCode === code)
+            .reduce((sum, l) => sum + l.amountCents, 0);
+          if (net === 0) continue;
+          let last = lines.findLast((l) => l.coverageCode === code);
+          if (!last) {
+            // Nothing of this coverage was left to credit, so there is no line to adjust. Add one.
+            const { annualPremiumCents } = earlier.findLast((l) => l.coverageCode === code)!;
+            last = line(id, "CREDIT", code, annualPremiumCents, date, date);
+            lines.push(last);
+          }
+          last.amountCents -= net;
+          last.roundingCents = -net;
+          if (last.amountCents > 0) last.kind = "CHARGE";
+        }
+      }
     }
 
     state.linesByEvent.set(id, lines);

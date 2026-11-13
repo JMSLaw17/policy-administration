@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Badge } from "@/components/ui";
+import { PolicyStatus } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { ApplicationList } from "@/components/policy/application-list";
@@ -66,7 +66,7 @@ export default async function PortalHome() {
               <span className="text-slate-600">
                 {formatDate(fromJSDate(p.startDate))} to {formatDate(fromJSDate(p.endDate))}
               </span>
-              {p.status === "ACTIVE" ? <Badge tone="green">Active</Badge> : <Badge tone="red">Cancelled</Badge>}
+              <PolicyStatus startDate={p.startDate} endDate={p.endDate} cancelledEffective={p.cancelledEffective} />
             </li>
           ))}
         </ul>

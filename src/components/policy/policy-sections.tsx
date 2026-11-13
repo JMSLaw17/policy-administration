@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Badge, Card } from "@/components/ui";
+import { Badge, Card, PolicyStatus } from "@/components/ui";
 import { coverageName, formatDate, formatUSD, formulaFor, isBelowMinimumPayment, periodFor, signedUSD, todayISO } from "@/lib/engine";
 import type { HistoryEntry, PolicyView, StatementRow } from "@/lib/policies/view";
 
@@ -33,14 +33,20 @@ export function PolicySummary({
       <div>
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-semibold text-slate-900">{view.policyNumber}</h1>
-          {view.status === "ACTIVE" ? <Badge tone="green">Active</Badge> : <Badge tone="red">Cancelled</Badge>}
+          <PolicyStatus startDate={view.startDate} endDate={view.endDate} cancelledEffective={view.cancelledEffective} />
         </div>
         <p className="mt-1 text-sm text-slate-600">
           Small Business Package for <span className="font-medium">{view.customer.businessName}</span>
         </p>
         <p className="mt-1 text-sm text-slate-500">
           Term: {formatDate(view.startDate)} to {formatDate(view.endDate)} ({view.termDays} days)
-          {view.cancelledEffective && <> · Cancelled effective {formatDate(view.cancelledEffective)}</>}
+          {view.cancelledEffective && (
+            <>
+              {" · "}
+              {view.cancelledEffective > todayISO() ? "Cancellation takes effect" : "Cancelled effective"}{" "}
+              {formatDate(view.cancelledEffective)}
+            </>
+          )}
         </p>
         {view.renewedFrom && (
           <p className="mt-1 text-sm text-slate-500">

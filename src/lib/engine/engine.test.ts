@@ -13,6 +13,8 @@ import {
   isISODate,
   planCorrection,
   PolicyRuleError,
+  policyStanding,
+  standingNote,
   proRate,
   replay,
   totalPremiumCents,
@@ -216,6 +218,50 @@ describe("cancellation (pro-rata, no penalty)", () => {
     expect(state.intervals).toEqual([]);
   });
 
+  it("comes to exactly zero when cancelled from the start date, whatever was added and removed", () => {
+    // A 366-day term, where a day of Cyber is not a whole number of cents, so separately
+    // rounded lines can miss by a cent.
+    const leapIssue: HistoryItem = {
+      id: "issue",
+      event: { type: "ISSUE", startDate: "2027-10-01", endDate: "2028-10-01", coverages: [GL] },
+    };
+    const day = (n: number) => new Date(Date.UTC(2027, 9, 1) + n * 86_400_000).toISOString().slice(0, 10);
+    let adjusted = 0;
+    for (let added = 1; added < 360; added += 13) {
+      for (let removed = added + 1; removed < 366; removed += 17) {
+        const state = replay([
+          leapIssue,
+          { id: "add", event: { type: "COVERAGE_CHANGE", effectiveDate: day(added), add: [CYBER], remove: [] } },
+          { id: "remove", event: { type: "COVERAGE_CHANGE", effectiveDate: day(removed), add: [], remove: ["CYBER"] } },
+          { id: "cancel", event: { type: "CANCELLATION", effectiveDate: "2027-10-01" } },
+        ]);
+        expect(totalPremiumCents(state), `Cyber on day ${added}, off day ${removed}`).toBe(0);
+        expect(state.intervals).toEqual([]);
+        // Any adjustment is a cent, is on a cancellation credit, and is recorded on the line.
+        for (const l of allLines(state).filter((x) => x.roundingCents)) {
+          adjusted++;
+          expect(l.eventId).toBe("cancel");
+          expect(Math.abs(l.roundingCents!)).toBe(1);
+          expect(l.amountCents).toBe(-proRate(l.annualPremiumCents, l.days, l.termDays) + l.roundingCents!);
+        }
+      }
+    }
+    expect(adjusted).toBeGreaterThan(0); // some of those pairs did need the cent
+  });
+
+  it("shows the formula's own result and the adjustment on a line that was moved by a cent", () => {
+    expect(
+      formulaFor({ annualPremiumCents: 73_000, days: 10, termDays: 366, amountCents: -1_994, roundingCents: 1 }),
+    ).toBe(
+      "$730.00 × 10 ÷ 366 days = $19.95, adjusted by $0.01 to $19.94 so that this coverage comes to exactly $0.00, because the policy was cancelled from its first day",
+    );
+  });
+
+  it("leaves a cancellation on any later day rounded line by line, as before", () => {
+    const state = replay([issue([GL, CYBER]), cancel("2027-04-01")]);
+    expect(allLines(state).some((l) => l.roundingCents)).toBe(false);
+  });
+
   it("credits nothing when cancelled on the last day", () => {
     expect(replay([issue(), cancel("2027-10-01")]).linesByEvent.get("cancel")).toEqual([]);
   });
@@ -297,3 +343,37 @@ describe("renewal", () => {
     expect(coveragesToRenew(state).map((c) => c.code).sort()).toEqual(["CYBER", "GL"]);
   });
 });
+
+describe("where a policy stands on a given day", () => {
+  const term = { startDate: "2026-10-01", endDate: "2027-10-01", cancelledEffective: null };
+  const standing = (today: string, cancelledEffective: string | null = null) =>
+    policyStanding({ ...term, cancelledEffective }, today);
+
+  it("is upcoming before the term, active during it, and expired after it", () => {
+    expect(standing("2026-09-30")).toEqual({ kind: "UPCOMING", cancelsOn: null });
+    expect(standing("2026-10-01")).toEqual({ kind: "ACTIVE", cancelsOn: null });
+    expect(standing("2027-09-30")).toEqual({ kind: "ACTIVE", cancelsOn: null });
+    // The end date is the day after the last day of cover.
+    expect(standing("2027-10-01")).toEqual({ kind: "EXPIRED", cancelsOn: null });
+  });
+
+  it("stays active until a scheduled cancellation takes effect, and says when that is", () => {
+    // On Nov 12 a cancellation is entered for Dec 1. The customer is covered until then.
+    expect(standing("2026-11-12", "2026-12-01")).toEqual({ kind: "ACTIVE", cancelsOn: "2026-12-01" });
+    expect(standing("2026-11-30", "2026-12-01")).toEqual({ kind: "ACTIVE", cancelsOn: "2026-12-01" });
+    expect(standing("2026-12-01", "2026-12-01")).toEqual({ kind: "CANCELLED", cancelsOn: null });
+    expect(standingNote(standing("2026-11-12", "2026-12-01"), term.startDate)).toBe("cancels Dec 1, 2026");
+  });
+
+  it("is cancelled outright when cancelled from its first day, even before the term starts", () => {
+    expect(standing("2026-09-01", "2026-10-01")).toEqual({ kind: "CANCELLED", cancelsOn: null });
+    expect(standingNote(standing("2026-09-01", "2026-10-01"), term.startDate)).toBe("cancelled");
+  });
+
+  it("describes a policy that isn't simply in force in a few words", () => {
+    expect(standingNote(standing("2026-11-12"), term.startDate)).toBe("");
+    expect(standingNote(standing("2026-09-01"), term.startDate)).toBe("starts Oct 1, 2026");
+    expect(standingNote(standing("2027-11-01"), term.startDate)).toBe("expired");
+  });
+});
+

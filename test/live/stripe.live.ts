@@ -115,6 +115,24 @@ describe("Stripe test mode, end to end", () => {
     await expect(startPayment(policy.id)).rejects.toThrow("Nothing is due");
   });
 
+  it("doesn't offer a second payment when a retry on the same form went through but isn't recorded yet", async () => {
+    const policy = await issuePolicy({ customerId, startDate: "2026-10-01", coverageCodes: ["GL"], userId: brokerId });
+    const { intentId } = await payWith(policy.id, DECLINED);
+    expect((await view(policy.id)).payments).toMatchObject([{ status: "FAILED" }]);
+
+    // The customer tries again on the same form, and this time it goes through. Stripe has
+    // collected $1,095.00, and the app hasn't heard yet.
+    await stripe().paymentIntents.confirm(intentId, { payment_method: VISA, return_url: "http://localhost:3100/portal" });
+
+    // Checkout is opened again. The old attempt is checked first, found paid, and recorded.
+    await expect(startPayment(policy.id)).rejects.toThrow("Your earlier payment went through, so nothing more is due.");
+    const v = await view(policy.id);
+    expect(v.balanceCents).toBe(0);
+    // One payment, the one that was retried, and nothing to refund.
+    expect(v.payments).toMatchObject([{ status: "SUCCEEDED", amountCents: 109_500, stripePaymentIntentId: intentId }]);
+    expect(v.refunds).toHaveLength(0);
+  });
+
   it("posts a payment once, however many times Stripe reports it", async () => {
     const policy = await issuePolicy({ customerId, startDate: "2026-10-01", coverageCodes: ["GL"], userId: brokerId });
     const { intentId } = await payWith(policy.id, VISA);

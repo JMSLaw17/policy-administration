@@ -57,6 +57,8 @@ export type LineCalc = {
   termDays: number;
   from: ISODate;
   to: ISODate;
+  /** See PremiumLine.roundingCents. */
+  roundingCents?: number;
 };
 
 /** What an action does to one policy's statement. */
@@ -93,18 +95,37 @@ export class PreviewChangedError extends Error {
   }
 }
 
-/** Every amount the broker was shown: each policy's lines, and its balance before and after. */
-function fingerprintOf(steps: Step[]): string {
+/**
+ * Everything the broker was shown and is agreeing to:
+ *  - the money: each policy's lines, and its balance before and after;
+ *  - the dates: where each policy's term and cover end up;
+ *  - the renewal: what was chosen for it, and any days left without cover.
+ *
+ * A gap is not money, but it is what the broker is asked to give a reason
+ * for. If the renewal has been moved since the preview, the gap being
+ * confirmed is a different one, so it is part of the fingerprint too.
+ */
+function fingerprintOf(
+  steps: Step[],
+  renewal: RenewalEffect | null,
+  gapAfterOriginal: ChangePreview["gapAfterOriginal"],
+): string {
   const line = (l: PlannedLine) => [l.description, l.amountCents];
-  return JSON.stringify(
-    steps.map((s) => [
+  const gap = (g: Gap | null) => g && [g.from, g.to, g.days];
+  return JSON.stringify({
+    policies: steps.map((s) => [
       s.policyId,
       s.planned.preview.balanceBeforeCents,
       s.planned.preview.balanceAfterCents,
       s.planned.preview.reversals.map(line),
       s.planned.preview.postings.map(line),
+      s.planned.state.startDate,
+      s.planned.state.endDate,
+      s.planned.state.cancelledEffective,
     ]),
-  );
+    renewal: renewal && [renewal.policyId, renewal.chosen, renewal.choices, gap(renewal.gapIfKept)],
+    gapAfterOriginal: gapAfterOriginal && [gapAfterOriginal.policyId, gap(gapAfterOriginal)],
+  });
 }
 
 /** Days with no cover: from `from` up to, not including, `to`. */
@@ -163,6 +184,11 @@ type IssueInput = {
   customerId: string;
   startDate: ISODate;
   coverageCodes: string[];
+  /**
+   * The annual price of each coverage, when the prices were agreed beforehand
+   * (on a signed application). Left out, today's rate table is used.
+   */
+  rates?: { code: string; annualPremiumCents: number }[];
   userId: string;
   /** Set when this policy renews an earlier one. */
   renewedFromId?: string;
@@ -182,7 +208,7 @@ export async function issuePolicyIn(tx: Tx, input: IssueInput) {
     type: "ISSUE",
     startDate: input.startDate,
     endDate: addOneYear(input.startDate),
-    coverages: input.coverageCodes.map(rateFor),
+    coverages: input.rates ?? input.coverageCodes.map(rateFor),
   };
   // Validates the event and gives us the charge lines.
   const state = replay([{ id: NEW, event }]);
@@ -478,7 +504,7 @@ async function planWithRenewal(
       renewal,
       gapAfterOriginal,
       reasonRequired: Boolean(gapAfterOriginal || (renewal?.chosen === "KEEP" && renewal.gapIfKept)),
-      fingerprint: fingerprintOf(steps),
+      fingerprint: fingerprintOf(steps, renewal, gapAfterOriginal),
     },
   };
 }
@@ -737,6 +763,7 @@ const calcOf = (l: PremiumLine): LineCalc => ({
   termDays: l.termDays,
   from: l.from,
   to: l.to,
+  ...(l.roundingCents ? { roundingCents: l.roundingCents } : {}),
 });
 
 function entryData(

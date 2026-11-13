@@ -3,6 +3,7 @@ import { DemoScenarioCard } from "@/components/broker/demo-scenario-card";
 import { primaryButton } from "@/components/ui";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { fromJSDate, policyStanding, standingNote, todayISO } from "@/lib/engine";
 
 export const metadata = { title: "Customers" };
 
@@ -13,7 +14,10 @@ export default async function BrokerHome() {
   await requireUser("BROKER");
   const customers = await db.customer.findMany({
     orderBy: { businessName: "asc" },
-    include: { policies: { select: { id: true, policyNumber: true, status: true }, orderBy: { createdAt: "asc" } } },
+    include: { policies: {
+        select: { id: true, policyNumber: true, startDate: true, endDate: true, cancelledEffective: true },
+        orderBy: { createdAt: "asc" },
+      }, },
   });
 
   return (
@@ -44,7 +48,7 @@ export default async function BrokerHome() {
                   className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
                 >
                   {p.policyNumber}
-                  {p.status === "CANCELLED" && <span className="ml-1 text-red-600">(cancelled)</span>}
+                  <PolicyNote policy={p} />
                 </Link>
               ))}
             </div>
@@ -55,3 +59,20 @@ export default async function BrokerHome() {
     </div>
   );
 }
+
+/** A few words after a policy's number when it isn't simply in force: "(cancelled)", "(cancels Dec 1, 2026)". */
+function PolicyNote({ policy }: { policy: { startDate: Date; endDate: Date; cancelledEffective: Date | null } }) {
+  const startDate = fromJSDate(policy.startDate);
+  const standing = policyStanding(
+    {
+      startDate,
+      endDate: fromJSDate(policy.endDate),
+      cancelledEffective: policy.cancelledEffective ? fromJSDate(policy.cancelledEffective) : null,
+    },
+    todayISO(),
+  );
+  const note = standingNote(standing, startDate);
+  if (!note) return null;
+  return <span className={`ml-1 ${standing.kind === "CANCELLED" ? "text-red-600" : "text-slate-500"}`}>({note})</span>;
+}
+

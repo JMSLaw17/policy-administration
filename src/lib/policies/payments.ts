@@ -46,20 +46,20 @@ export async function balanceCents(policyId: string): Promise<number> {
 export async function startPayment(policyId: string): Promise<{ clientSecret: string; amountCents: number }> {
   // A finished attempt is recorded and a new one reserved, so this can take a second pass.
   for (let pass = 0; pass < 3; pass++) {
-    const { payment, due, isNew } = await reserveAttempt(policyId);
+    // First find out what became of any earlier attempt that was declined. The amount due
+    // is only worked out, and a new attempt only offered, once that is known.
+    await settleDeclinedAttempts(policyId);
+    const { payment, due } = await reserveAttempt(policyId);
 
-    let intent: Stripe.PaymentIntent;
-    if (payment.stripePaymentIntentId) {
-      intent = await stripe().paymentIntents.retrieve(payment.stripePaymentIntentId);
-    } else {
-      if (isNew) await cancelFailedAttempts(policyId);
-      intent = await createIntent(payment);
-    }
+    const intent = payment.stripePaymentIntentId
+      ? await stripe().paymentIntents.retrieve(payment.stripePaymentIntentId)
+      : await createIntent(payment);
 
     if (intent.status === "processing") {
       throw new PaymentError("A payment is already being processed. It can take a little while to clear.");
     }
     if (isUnfinished(intent) && !intent.last_payment_error) {
+      let current = intent;
       if (intent.amount < due) {
         // More is due than this attempt was opened for. Its amount may already
         // be on a Pay button in another tab, and an amount a customer has been
@@ -80,7 +80,7 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
         continue;
       }
       if (intent.amount > due) {
-        intent = await stripe().paymentIntents.update(intent.id, { amount: due });
+        current = await stripe().paymentIntents.update(intent.id, { amount: due });
         await db.payment.update({ where: { id: payment.id }, data: { amountCents: due } });
         await logIntegrationEvent({
           provider: "stripe",
@@ -88,10 +88,10 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
           eventType: "payment_intent.update",
           externalId: intent.id,
           policyId,
-          payload: { amount: due, status: intent.status },
+          payload: { amount: due, status: current.status },
         });
       }
-      return { clientSecret: intent.client_secret!, amountCents: intent.amount };
+      return { clientSecret: current.client_secret!, amountCents: current.amount };
     }
 
     // Succeeded, failed, or cancelled: record it, which closes the attempt, and start fresh.
@@ -125,8 +125,8 @@ async function reserveAttempt(policyId: string) {
       where: { policyId, status: { in: ["INITIATED", "PENDING"] } },
       orderBy: { createdAt: "desc" },
     });
-    if (open) return { payment: open, due, isNew: false };
-    return { payment: await tx.payment.create({ data: { policyId, amountCents: due } }), due, isNew: true };
+    if (open) return { payment: open, due };
+    return { payment: await tx.payment.create({ data: { policyId, amountCents: due } }), due };
   });
 }
 
@@ -166,21 +166,48 @@ async function createIntent(payment: { id: string; policyId: string; amountCents
 }
 
 /**
- * A failed attempt keeps its own record. Its PaymentIntent is cancelled so it
- * can never be completed later, on top of a new attempt.
+ * A declined card leaves its payment form open, and the customer can try again
+ * on it. So a declined attempt isn't over until Stripe says so, and before a
+ * new attempt is offered each one is settled:
+ *
+ *  - It was paid after all (a retry on the same form went through, and the
+ *    news hasn't reached us yet): the payment is recorded now, so the amount
+ *    due is worked out with it counted. Without this, a second checkout could
+ *    collect the same balance again.
+ *  - Stripe is still processing it: no new attempt until it settles.
+ *  - It is still open: it is cancelled at Stripe, so it can never be completed
+ *    on top of the new attempt. If the cancellation can't be confirmed, no
+ *    new attempt is offered, because the old one might still take the money.
+ *
+ * A failed attempt keeps its own record throughout.
  */
-async function cancelFailedAttempts(policyId: string) {
-  const failed = await db.payment.findMany({
+async function settleDeclinedAttempts(policyId: string) {
+  const declined = await db.payment.findMany({
     where: { policyId, status: "FAILED", stripePaymentIntentId: { not: null }, failureReason: { notIn: CLOSED_NOTES } },
   });
-  for (const f of failed) {
-    try {
-      const intent = await stripe().paymentIntents.retrieve(f.stripePaymentIntentId!);
-      if (intent.status !== "canceled" && intent.status !== "succeeded") {
-        await stripe().paymentIntents.cancel(intent.id);
+  const read = (id: string) => stripe().paymentIntents.retrieve(id, { expand: ["payment_method"] });
+  for (const attempt of declined) {
+    let intent = await read(attempt.stripePaymentIntentId!);
+    if (isUnfinished(intent)) {
+      try {
+        intent = await stripe().paymentIntents.cancel(intent.id);
+      } catch {
+        // Stripe refuses to cancel a payment that has just gone through. Look again.
+        intent = await read(intent.id);
+        if (isUnfinished(intent)) {
+          throw new PaymentError(
+            "We couldn't close your earlier payment attempt, so a new one wasn't started. Nothing was charged. Please try again in a moment.",
+          );
+        }
       }
-    } catch (error) {
-      console.error("Could not cancel a failed PaymentIntent", error);
+    }
+    // Paid, being processed, or cancelled: record which.
+    await recordPaymentIntent(intent);
+    if (intent.status === "processing") {
+      throw new PaymentError("A payment is already being processed. It can take a little while to clear.");
+    }
+    if (intent.status === "succeeded" && (await balanceCents(policyId)) <= 0) {
+      throw new PaymentError("Your earlier payment went through, so nothing more is due.");
     }
   }
 }

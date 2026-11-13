@@ -1,4 +1,5 @@
 import "server-only";
+import { z } from "zod";
 import { db } from "@/lib/db";
 import {
   addOneYear,
@@ -8,6 +9,7 @@ import {
   fromJSDate,
   getCoverage,
   PolicyRuleError,
+  PREMIUM_DUE_RULE,
   replay,
   toJSDate,
   totalPremiumCents,
@@ -67,6 +69,8 @@ export async function sendApplication(input: {
       startDate: toJSDate(input.startDate),
       coverageCodes: input.coverageCodes,
       premiumCents,
+      // The prices printed on the document. The policy is issued at these.
+      signedRates: coverages,
       signerName: signer.name,
       signerEmail: signer.email,
       signerUserId: signer.id,
@@ -182,12 +186,42 @@ export async function issueFromApplication(applicationId: string, userId: string
       customerId: application.customerId,
       startDate: fromJSDate(application.startDate),
       coverageCodes: application.coverageCodes,
+      rates: signedRatesOf(application),
       userId,
     });
     await tx.application.update({ where: { id: application.id }, data: { policyId: policy.id } });
     return policy;
   });
 }
+
+/**
+ * The prices the policyholder signed for. The policy is issued at exactly
+ * these, so the first charge is the figure on the signed document even if
+ * the rate table has changed since.
+ *
+ * Applications sent before prices were saved with them have only the signed
+ * total. Those are issued at today's prices if that still comes to the same
+ * total, and refused otherwise, since there is no telling which price moved.
+ */
+function signedRatesOf(application: { coverageCodes: string[]; premiumCents: number; signedRates: unknown }) {
+  const saved = SignedRates.safeParse(application.signedRates);
+  const rates = saved.success
+    ? saved.data
+    : application.coverageCodes.map((code) => ({ code, annualPremiumCents: getCoverage(code).annualPremiumCents }));
+  const sameCoverages =
+    rates.length === application.coverageCodes.length && rates.every((r) => application.coverageCodes.includes(r.code));
+  const total = rates.reduce((sum, r) => sum + r.annualPremiumCents, 0);
+  if (!sameCoverages || total !== application.premiumCents) {
+    throw new PolicyRuleError(
+      saved.success
+        ? "This application's prices don't add up to the premium that was signed for, so it can't be issued. Send a new application for signature."
+        : `Prices have changed since this application was signed: it was signed for ${formatUSD(application.premiumCents)} and would now be ${formatUSD(total)}. Send a new application for signature.`,
+    );
+  }
+  return rates;
+}
+
+const SignedRates = z.array(z.object({ code: z.string(), annualPremiumCents: z.number().int().positive() })).min(1);
 
 export async function withdrawApplication(applicationId: string) {
   const application = await db.application.findUniqueOrThrow({ where: { id: applicationId } });
@@ -238,7 +272,7 @@ ${rows}
 <tr><td style="border-top:1px solid #999;padding:6px 0"><b>Total premium for the term</b></td><td style="border-top:1px solid #999;padding:6px 0;text-align:right"><b>${formatUSD(a.premiumCents)}</b></td></tr>
 </table>
 <h2 style="font-size:13pt;margin-top:28px">Declaration</h2>
-<p>I confirm that the information above is correct, that I am authorized to apply for this insurance on behalf of ${escape(a.businessName)}, and that I ask the broker to issue the policy on these terms. The premium is due in full when the policy is issued.</p>
+<p>I confirm that the information above is correct, that I am authorized to apply for this insurance on behalf of ${escape(a.businessName)}, and that I ask the broker to issue the policy on these terms. ${PREMIUM_DUE_RULE}</p>
 <table style="margin-top:48px;width:100%"><tr>
 <td style="width:60%">Signed by ${escape(a.signerName)}<br/><br/><span style="color:#fff">/sig1/</span></td>
 <td>Date<br/><br/><span style="color:#fff">/date1/</span></td>

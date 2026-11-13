@@ -1,6 +1,8 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { db } from "@/lib/db";
-import { issueFromApplication, syncApplication, withdrawApplication } from "@/lib/policies/applications";
+import { PREMIUM_DUE_RULE } from "@/lib/engine";
+import { issueFromApplication, sendApplication, syncApplication, withdrawApplication } from "@/lib/policies/applications";
+import { loadPolicyView } from "@/lib/policies/view";
 
 /**
  * Tests of how a signed application becomes a policy, against a real (test)
@@ -12,13 +14,18 @@ const docusign = vi.hoisted(() => ({
   status: "completed",
   /** Runs while DocuSign is "thinking", before it answers: the place another request can get in. */
   meanwhile: async () => {},
+  /** The document last sent for signature. */
+  sentHtml: "",
 }));
 
 vi.mock("@/lib/integrations/docusign", () => ({
   DocuSignError: class DocuSignError extends Error {},
   DocuSignNotConfiguredError: class DocuSignNotConfiguredError extends Error {},
   isDocuSignConfigured: () => true,
-  createEnvelope: async () => "env_new",
+  createEnvelope: async (input: { documentHtml: string }) => {
+    docusign.sentHtml = input.documentHtml;
+    return `env_${Math.random().toString(36).slice(2)}`;
+  },
   createSigningUrl: async () => "https://demo.docusign.net/sign",
   getEnvelopeStatus: async () => {
     await docusign.meanwhile();
@@ -53,6 +60,9 @@ beforeAll(async () => {
     data: { email: "broker@test.test", name: "Test Broker", role: "BROKER", passwordHash: "x" },
   });
   brokerId = broker.id;
+  await db.user.create({
+    data: { email: "tess@test-bakery.test", name: "Tess Tester", role: "POLICYHOLDER", passwordHash: "x", customerId },
+  });
 });
 
 beforeEach(async () => {
@@ -119,3 +129,38 @@ describe("checking an application's status with DocuSign", () => {
     expect(await reload(application.id)).toMatchObject({ status: "SIGNED" });
   });
 });
+
+describe("sending an application for signature", () => {
+  it("saves the prices on the document, and the policy is issued at exactly those", async () => {
+    const application = await sendApplication({
+      customerId,
+      startDate: "2027-01-01",
+      coverageCodes: ["GL", "CYBER"],
+      userId: brokerId,
+    });
+    expect(application).toMatchObject({
+      premiumCents: 182_500,
+      signedRates: [
+        { code: "GL", annualPremiumCents: 109_500 },
+        { code: "CYBER", annualPremiumCents: 73_000 },
+      ],
+    });
+    // The document shows those prices, and says when the premium is due: the same rule the policy page applies.
+    expect(docusign.sentHtml).toContain("$1,095.00");
+    expect(docusign.sentHtml).toContain("$730.00");
+    expect(docusign.sentHtml).toContain("$1,825.00");
+    expect(docusign.sentHtml).toContain(PREMIUM_DUE_RULE);
+
+    // Signed, then issued: the first charges are the signed prices.
+    await syncApplication(application.id);
+    const policy = await issueFromApplication(application.id, brokerId);
+    const view = (await loadPolicyView(policy.id))!;
+    expect(view.statement.map((r) => [r.coverageCode, r.amountCents])).toEqual([
+      ["GL", 109_500],
+      ["CYBER", 73_000],
+    ]);
+    // The term starts in the future, so the premium is due on its first day, as the document says.
+    expect(view.dueDate).toBe("2027-01-01");
+  });
+});
+

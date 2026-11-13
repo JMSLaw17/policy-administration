@@ -50,6 +50,12 @@ export type PremiumLine = {
   from: ISODate;
   /** The day after the last day this line covers. */
   to: ISODate;
+  /**
+   * Set on the one kind of line whose amount isn't purely the formula: a
+   * credit on a policy cancelled from its first day, moved by a cent or so to
+   * make the coverage's lines come to exactly zero. This is how far it moved.
+   */
+  roundingCents?: number;
 };
 
 /** A stretch of days a coverage is in force: from `from` up to, not including, `to`. */

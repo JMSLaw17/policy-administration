@@ -9,6 +9,7 @@ import {
   fromJSDate,
   getCoverage,
   isCoveredOn,
+  MAX_CLAIM_CENTS,
   PolicyRuleError,
   replay,
   toJSDate,
@@ -49,6 +50,11 @@ export async function fileClaim(input: {
   if (input.lossDate > todayISO()) throw new PolicyRuleError("The date of loss can't be in the future.");
   if (!Number.isInteger(input.claimedCents) || input.claimedCents <= 0) {
     throw new PolicyRuleError("Enter the amount of the loss.");
+  }
+  if (input.claimedCents > MAX_CLAIM_CENTS) {
+    throw new PolicyRuleError(
+      `The largest loss that can be entered is ${formatUSD(MAX_CLAIM_CENTS)}. For a larger loss, enter ${formatUSD(MAX_CLAIM_CENTS)} and give the full figure in the description. The payout is the same either way, because ${coverage.name} pays at most ${formatUSD(coverage.limitCents)} for one claim.`,
+    );
   }
   const state = await policyState(input.policyId);
   if (!isCoveredOn(state, coverage.code, input.lossDate)) {

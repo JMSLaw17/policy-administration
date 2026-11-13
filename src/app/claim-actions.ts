@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { COVERAGES, isISODate, parseUSD, PolicyRuleError } from "@/lib/engine";
+import { COVERAGES, formatUSD, isISODate, MAX_CLAIM_CENTS, parseUSD, PolicyRuleError } from "@/lib/engine";
 import { decideClaim, fileClaim, payClaim } from "@/lib/policies/claims";
 
 export type ClaimFormState = { error?: string; saved?: string } | undefined;
@@ -18,7 +18,9 @@ const dollars = (label: string) =>
   z
     .string()
     .transform((value) => parseUSD(value))
-    .refine((cents): cents is number => cents !== null && cents > 0, `Enter ${label} in dollars, such as 4,000.`);
+    .refine((cents): cents is number => cents !== null && cents > 0, `Enter ${label} in dollars, such as 4,000.`)
+    // Checked here as well as in the claim rules, so an amount too large to store never reaches the database.
+    .refine((cents) => cents <= MAX_CLAIM_CENTS, `The largest amount that can be entered is ${formatUSD(MAX_CLAIM_CENTS)}.`);
 
 const FileSchema = z.object({
   policyId: z.string().min(1),

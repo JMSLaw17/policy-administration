@@ -60,6 +60,10 @@ model Application {
   startDate          DateTime          @db.Date
   coverageCodes      String[]
   premiumCents       Int
+  /// The annual price of each coverage as printed on the document the
+  /// policyholder signed: [{ code, annualPremiumCents }]. The policy is issued
+  /// at these prices, whatever the rate table says by then.
+  signedRates        Json?
   status             ApplicationStatus @default(AWAITING_SIGNATURE)
   docusignEnvelopeId String?           @unique
   signerName         String

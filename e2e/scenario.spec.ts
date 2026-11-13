@@ -409,3 +409,29 @@ test("a refused confirmation isn't shown if the form changed while it was in fli
   await expect(broker.locator("#history-4")).toContainText("Cyber Liability now counts 14 more days");
 });
 
+test("a cancellation dated in the future leaves the policy active until that day", async ({ browser }) => {
+  const { broker, holder } = await demoPolicy(browser);
+  const inThreeWeeks = new Date(Date.now() + 21 * 86_400_000);
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(inThreeWeeks);
+  const shown = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", month: "short", day: "numeric", year: "numeric" }).format(inThreeWeeks);
+
+  const card = broker.locator("#cancel");
+  await card.locator('input[type="date"]').fill(date);
+  await card.locator("input:not([type=date])").first().fill("Customer is closing the business");
+  await card.getByRole("button", { name: "Preview cancellation" }).click();
+  await card.getByRole("button", { name: "Cancel the policy" }).click();
+
+  // Both roles see a policy that is active today and will be cancelled on that date,
+  // which is what the coverage table says too.
+  await expect(broker.getByTestId("policy-status").first()).toContainText(`Cancels ${shown}`);
+  await holder.reload();
+  for (const page of [broker, holder]) {
+    const status = page.getByTestId("policy-status").first();
+    await expect(status).toContainText("Active");
+    await expect(status).toContainText(`Cancels ${shown}`);
+    await expect(status).not.toContainText("Cancelled");
+    await expect(page.getByText(`Cancellation takes effect ${shown}`)).toBeVisible();
+    await expect(page.locator("section").filter({ has: page.getByRole("heading", { name: "Coverage", exact: true }) })).toContainText("In force");
+  }
+});
+
