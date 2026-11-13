@@ -257,14 +257,16 @@ test("the Pay button shows what Stripe will collect, and asks again when the amo
   await changed.getByRole("checkbox").check();
   await expect(payButton(holder)).toBeEnabled();
 
-  // With the form still open, the broker moves it back a week. Stripe now holds $14.00, not the $28.00 on the button.
+  // With the form still open, the broker moves it back a week. Only $14.00 is due now, so the
+  // $28.00 payment behind this form is closed at Stripe.
   await moveCyber(broker, 7);
   await expect(balance(broker)).toHaveText("$14.00");
   await payButton(holder).click();
-  // Nothing is charged. The button catches up, and asks again.
+  // Nothing is charged. A new payment for $14.00 replaces it, in a fresh form, and asks again.
   await expect(changed).toContainText("It was $28.00 and is now $14.00");
   await expect(payButton(holder)).toHaveText("Pay $14.00");
   await expect(payButton(holder)).toBeDisabled();
+  await fillCard(holder, CARD_OK);
   await changed.getByRole("checkbox").check();
   await payButton(holder).click();
 

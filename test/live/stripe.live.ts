@@ -162,12 +162,22 @@ describe("Stripe test mode, end to end", () => {
     await moveCyber("2026-11-01");
     await Promise.all([firstUpdate, syncOpenPayments(policy.id)]);
 
-    // Whichever order they ran in, Stripe holds the amount due now, never the earlier, higher one.
+    // Whichever order they ran in, the old payment is closed at Stripe with its amount untouched,
+    // so it can't be paid, and no late request can change that.
     const due = await balanceCents(policy.id);
     expect(due).toBe(opened.amountCents - 2_800);
-    expect((await stripe().paymentIntents.retrieve(intentId)).amount).toBe(due);
-    expect((await view(policy.id)).payments).toMatchObject([{ status: "INITIATED", amountCents: due }]);
-    expect(await startPayment(policy.id)).toEqual({ clientSecret: opened.clientSecret, amountCents: due });
+    expect(await stripe().paymentIntents.retrieve(intentId)).toMatchObject({ status: "canceled", amount: opened.amountCents });
+
+    // Checkout then offers a new payment for exactly what is due now.
+    const reopened = await startPayment(policy.id);
+    expect(reopened.amountCents).toBe(due);
+    expect(reopened.clientSecret).not.toBe(opened.clientSecret);
+    const replacement = await stripe().paymentIntents.retrieve(reopened.clientSecret.split("_secret_")[0]);
+    expect(replacement).toMatchObject({ status: "requires_payment_method", amount: due });
+    expect((await view(policy.id)).payments.map((p) => [p.status, p.amountCents])).toEqual([
+      ["FAILED", opened.amountCents],
+      ["INITIATED", due],
+    ]);
   });
 
   it("posts a payment once, however many times Stripe reports it", async () => {

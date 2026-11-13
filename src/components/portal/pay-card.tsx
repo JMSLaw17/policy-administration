@@ -42,8 +42,8 @@ export function PayCard({
   const clientSecret = checkout?.clientSecret ?? null;
   const [error, setError] = useState<string | null>(null);
   // Set when checkout found that nothing is due after all, because an earlier payment went through.
-  // `stale` is the amount this page was still showing as due at that moment.
-  const [paid, setPaid] = useState<{ message: string; stale: number } | null>(null);
+  // `refreshed` turns true once this page has caught up and shows nothing due.
+  const [paid, setPaid] = useState<{ message: string; refreshed: boolean } | null>(null);
   const [processing, setProcessing] = useState(false);
 
   // While Stripe is still working on a payment, keep checking until it settles.
@@ -56,10 +56,15 @@ export function PayCard({
     return () => clearInterval(timer);
   }, [waiting, policyId, router]);
 
-  // Checkout found the policy already paid. Say so in place of the Pay button, straight away
-  // and after the page has refreshed to show nothing due. If an amount later falls due, the
-  // button comes back.
-  if (paid && (amountDueCents <= 0 || amountDueCents === paid.stale)) {
+  // Checkout found the policy already paid. Say so in place of the Pay button: straight away,
+  // while this page still shows the old amount, and after it has refreshed to show nothing due.
+  // The notice is tied to that refresh, not to the amount. Once the page has shown nothing due,
+  // any amount that appears afterwards is a new one, even if it is the same figure, so the
+  // notice is dropped and the Pay button comes back. (State is adjusted during render, which
+  // React allows for state derived from props.)
+  if (paid && !paid.refreshed && amountDueCents <= 0) setPaid({ ...paid, refreshed: true });
+  if (paid?.refreshed && amountDueCents > 0) setPaid(null);
+  if (paid && (amountDueCents <= 0 || !paid.refreshed)) {
     return (
       <Card id="pay" title="Paid">
         <p className="px-5 py-4 text-sm text-green-800" data-testid="already-paid">
@@ -83,21 +88,21 @@ export function PayCard({
     );
   }
 
-  const begin = () =>
+  /** `quoted` is the amount the customer was last shown: on the Pay button, or on a form that has since been closed. */
+  const begin = (quoted: number = amountDueCents) =>
     startTransition(async () => {
       setError(null);
       const result = await startPaymentAction(policyId);
       if (!result.ok) {
         // The server may have recorded a payment, or found one in progress. Show the page as it is now.
-        if (result.paid) setPaid({ message: result.message, stale: amountDueCents });
+        if (result.paid) setPaid({ message: result.message, refreshed: false });
         else setError(result.error);
         router.refresh();
         return;
       }
       setPaid(null);
       // The amount comes from the server, not from this page, which may have been open a while.
-      // `quotedCents` is what the button the customer just pressed said.
-      setCheckout({ clientSecret: result.clientSecret, amountCents: result.amountCents, quotedCents: amountDueCents });
+      setCheckout({ clientSecret: result.clientSecret, amountCents: result.amountCents, quotedCents: quoted });
       if (result.amountCents !== amountDueCents) router.refresh();
     });
 
@@ -156,7 +161,7 @@ export function PayCard({
                 Your payment is pending. This page updates as soon as Stripe confirms it.
               </p>
             ) : (
-              <button type="button" onClick={begin} disabled={pending || !stripePromise} className={primaryButton}>
+              <button type="button" onClick={() => begin()} disabled={pending || !stripePromise} className={primaryButton}>
                 <ButtonLabel pending={pending}>{`Pay ${formatUSD(amountDueCents)} now`}</ButtonLabel>
               </button>
             )}
@@ -171,9 +176,12 @@ export function PayCard({
           </p>
         )}
         {checkout && stripePromise && (
-          <Elements stripe={stripePromise} options={{ clientSecret: checkout.clientSecret }}>
+          // Keyed by the payment, so a replacement payment gets a fresh form.
+          <Elements key={checkout.clientSecret} stripe={stripePromise} options={{ clientSecret: checkout.clientSecret }}>
             <PaymentForm
               policyId={policyId}
+              restarting={pending}
+              onClosed={(shown) => begin(shown)}
               clientSecret={checkout.clientSecret}
               amountCents={checkout.amountCents}
               quotedCents={checkout.quotedCents}
@@ -202,10 +210,16 @@ function PaymentForm({
   clientSecret,
   amountCents,
   quotedCents,
+  restarting,
+  onClosed,
   onDone,
   onCancel,
 }: {
   policyId: string;
+  /** True while a replacement payment is being started. */
+  restarting: boolean;
+  /** Called when Stripe says this payment has been closed, with the amount this form was showing. */
+  onClosed: (shownCents: number) => void;
   clientSecret: string;
   /** The amount on the Stripe payment when the form was opened. */
   amountCents: number;
@@ -237,6 +251,14 @@ function PaymentForm({
       // The amount couldn't be checked, so the payment isn't sent.
       setSubmitting(false);
       setError("We couldn't check the amount with Stripe, so nothing was charged. Please try again.");
+      return;
+    }
+    if (current.paymentIntent.status === "canceled") {
+      // The amount due changed while this form was open, and this payment was closed. Nothing
+      // is charged. A new payment is started for the amount due now, and the customer is
+      // shown both figures and asked to agree before paying.
+      setSubmitting(false);
+      onClosed(amount);
       return;
     }
     if (current.paymentIntent.amount !== amount) {
@@ -286,8 +308,8 @@ function PaymentForm({
         </p>
       )}
       <div className="mt-4 flex gap-2">
-        <button type="submit" disabled={!stripe || submitting || (changed && !agreed)} className={primaryButton}>
-          <ButtonLabel pending={submitting}>{`Pay ${formatUSD(amount)}`}</ButtonLabel>
+        <button type="submit" disabled={!stripe || submitting || restarting || (changed && !agreed)} className={primaryButton}>
+          <ButtonLabel pending={submitting || restarting}>{`Pay ${formatUSD(amount)}`}</ButtonLabel>
         </button>
         <button type="button" onClick={onCancel} disabled={submitting} className={secondaryButton}>
           Cancel

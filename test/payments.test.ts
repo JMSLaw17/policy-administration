@@ -40,8 +40,10 @@ const fake = vi.hoisted(() => ({
   cancelFails: false,
   /** Runs once, just before Stripe is next asked about a payment: the place other news can arrive. */
   meanwhile: null as null | (() => Promise<void>),
-  /** Makes the next change to a payment's amount take this long to reach Stripe. */
-  slowNextUpdateMs: 0,
+  /** How many times an existing payment's amount was changed at Stripe. The app should never do it. */
+  amountUpdates: 0,
+  /** Runs once, while Stripe is creating the next payment and before the app has its id. */
+  whileCreating: null as null | (() => Promise<void>),
   /** Disputes as Stripe holds them, by id. */
   disputes: new Map<string, unknown>(),
 }));
@@ -60,6 +62,9 @@ vi.mock("@/lib/integrations/stripe", async () => {
           const intent = { id, status: "requires_payment_method", amount: data.amount, amount_received: 0, client_secret: `${id}_secret` };
           fake.intents.set(id, intent);
           fake.byKey.set(options.idempotencyKey, intent);
+          const whileCreating = fake.whileCreating;
+          fake.whileCreating = null;
+          await whileCreating?.();
           return intent;
         },
         retrieve: async (id: string) => {
@@ -69,10 +74,7 @@ vi.mock("@/lib/integrations/stripe", async () => {
           return fake.intents.get(id)!;
         },
         update: async (id: string, data: { amount: number }) => {
-          // A slow request: Stripe applies it when it arrives, not when it was sent.
-          const delay = fake.slowNextUpdateMs;
-          fake.slowNextUpdateMs = 0;
-          if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+          fake.amountUpdates++;
           return Object.assign(fake.intents.get(id)!, data);
         },
         cancel: async (id: string) => {
@@ -149,7 +151,8 @@ beforeEach(async () => {
   fake.refundStatus = "succeeded";
   fake.cancelFails = false;
   fake.meanwhile = null;
-  fake.slowNextUpdateMs = 0;
+  fake.amountUpdates = 0;
+  fake.whileCreating = null;
   fake.disputes.clear();
 });
 
@@ -250,56 +253,80 @@ describe("a payment that clears for more than is now due", () => {
 });
 
 describe("a payment form left open while the broker changes the policy", () => {
-  it("is lowered when less is due", async () => {
-    const { policyId, cyberChangeId } = await policyWithCyber();
-    const { intent, paymentId } = await openPayment(policyId, "requires_payment_method");
-
-    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
-    await syncOpenPayments(policyId);
-
-    const due = GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER;
-    expect(intent.amount).toBe(due);
-    expect((await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).amountCents).toBe(due);
-
-    // Paying it now settles the policy exactly, with nothing to refund.
-    await stripeConfirms(intent);
-    expect(await balance(policyId)).toBe(0);
-    expect(fake.refunds).toHaveLength(0);
-  });
-
-  it("is lowered even after a declined card, because the form can still be retried", async () => {
-    const { policyId, cyberChangeId } = await policyWithCyber();
-    const { intent } = await openPayment(policyId, "requires_payment_method", "FAILED");
-
-    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
-    await syncOpenPayments(policyId);
-    expect(intent.amount).toBe(GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER);
-  });
-
-  it("isn't put back up by a slow update for an earlier change", async () => {
+  it("is closed when less is due, and checkout then starts a new payment for the new amount", async () => {
     const { policyId, cyberChangeId } = await policyWithCyber();
     const { intent, paymentId } = await openPayment(policyId, "requires_payment_method");
     const full = GL + CYBER_FROM_OCT_25;
 
-    // A first correction takes a week off. Its update to Stripe is slow to arrive.
     await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
-    fake.slowNextUpdateMs = 200;
-    const firstUpdate = syncOpenPayments(policyId);
-    await new Promise((resolve) => setTimeout(resolve, 50)); // it is on its way to Stripe
-
-    // Meanwhile a second correction takes another week off, and its update is sent.
-    await moveCyberTo(policyId, cyberChangeId, "2026-11-08");
     await syncOpenPayments(policyId);
-    await firstUpdate;
 
-    // The payment ends at what is due now. The first update didn't land last and undo the second.
+    // The old payment is cancelled at Stripe, with its amount untouched, so it can't be paid.
+    const due = full - WEEK_OF_CYBER;
+    expect(intent).toMatchObject({ status: "canceled", amount: full });
+    const closed = await db.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    expect(closed).toMatchObject({ status: "FAILED", amountCents: full, failureReason: "Not submitted. Closed when the amount due changed." });
+    expect(closed.closedAt).not.toBeNull();
+
+    // Opening checkout again gives a new payment for exactly what is due. Paying it settles the policy.
+    const reopened = await startPayment(policyId);
+    expect(reopened).toEqual({ clientSecret: "pi_2_secret", amountCents: due });
+    await stripeConfirms(fake.intents.get("pi_2")!);
+    expect(await balance(policyId)).toBe(0);
+    expect(fake.refunds).toHaveLength(0);
+  });
+
+  it("is closed even after a declined card, because that form could still be retried", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "requires_payment_method", "FAILED");
+
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    await syncOpenPayments(policyId);
+    expect(intent.status).toBe("canceled");
+    // It keeps its decline reason, and is marked closed.
+    const closed = await db.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    expect(closed).toMatchObject({ status: "FAILED", failureReason: "Your card was declined." });
+    expect(closed.closedAt).not.toBeNull();
+  });
+
+  it("never has its amount changed at Stripe, so no late request can put it back up", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const { intent } = await openPayment(policyId, "requires_payment_method");
+    const full = GL + CYBER_FROM_OCT_25;
+
+    // Two corrections, each taking a week off, with their follow-ups overlapping.
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+    const first = syncOpenPayments(policyId);
+    await moveCyberTo(policyId, cyberChangeId, "2026-11-08");
+    await Promise.all([first, syncOpenPayments(policyId)]);
+
+    // No amount was ever sent to Stripe for an existing payment. The old one is simply closed,
+    // which nothing arriving late can undo, and checkout offers what is due now.
+    expect(fake.amountUpdates).toBe(0);
+    expect(intent).toMatchObject({ status: "canceled", amount: full });
     const due = full - 2 * WEEK_OF_CYBER;
+    expect(await startPayment(policyId)).toEqual({ clientSecret: "pi_2_secret", amountCents: due });
+    expect(fake.amountUpdates).toBe(0);
+  });
+
+  it("is closed if the policy changes while the payment is still being created", async () => {
+    const { policyId, cyberChangeId } = await policyWithCyber();
+    const full = GL + CYBER_FROM_OCT_25;
+
+    // Checkout is opened. While Stripe is creating the payment, before its id is on record,
+    // a correction takes a week off. Its follow-up can't see the payment to close it.
+    fake.whileCreating = async () => {
+      await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
+      await syncOpenPayments(policyId);
+    };
+    const started = await startPayment(policyId);
+
+    // Checkout re-read the balance once the payment was linked, closed it, and made another.
+    const due = full - WEEK_OF_CYBER;
+    expect(started).toEqual({ clientSecret: "pi_2_secret", amountCents: due });
+    expect(fake.intents.get("pi_1")).toMatchObject({ status: "canceled", amount: full });
+    expect(fake.intents.get("pi_2")).toMatchObject({ status: "requires_payment_method", amount: due });
     expect(await balance(policyId)).toBe(due);
-    expect(intent.amount).toBe(due);
-    expect((await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).amountCents).toBe(due);
-    // And checkout offers that amount.
-    expect((await startPayment(policyId)).amountCents).toBe(due);
-    expect(fake.intents.size).toBe(1);
   });
 
   it("is never raised: the customer pays what their screen showed and the rest stays due", async () => {
@@ -380,13 +407,15 @@ describe("starting a payment", () => {
     ]);
   });
 
-  it("lowers the open payment when less is due, and reports the amount it will collect", async () => {
+  it("replaces the open payment when less is due, and reports the amount it will collect", async () => {
     const { policyId, cyberChangeId } = await policyWithCyber();
     await startPayment(policyId);
+    // Less becomes due, and checkout is opened again before anything else has closed the old payment.
     await moveCyberTo(policyId, cyberChangeId, "2026-11-01");
     const reopened = await startPayment(policyId);
-    expect(reopened).toEqual({ clientSecret: "pi_1_secret", amountCents: GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER });
-    expect(fake.intents.get("pi_1")!.amount).toBe(reopened.amountCents);
+    expect(reopened).toEqual({ clientSecret: "pi_2_secret", amountCents: GL + CYBER_FROM_OCT_25 - WEEK_OF_CYBER });
+    expect(fake.intents.get("pi_1")).toMatchObject({ status: "canceled", amount: GL + CYBER_FROM_OCT_25 });
+    expect(fake.amountUpdates).toBe(0);
   });
 });
 
