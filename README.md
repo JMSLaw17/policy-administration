@@ -6,7 +6,7 @@ The app is built around one rule: **nothing on the statement is ever edited.** E
 
 - **Track:** 1, policy administration
 - **Deployed app:** https://policy-administration.vercel.app
-- **Video:** link to be added. The script is in [docs/video-script.md](docs/video-script.md), and `npm run video` records it ([docs/video.md](docs/video.md)).
+- **Video:** [docs/demo.mp4](docs/demo.mp4), 3 minutes 48 seconds. The script is in [docs/video-script.md](docs/video-script.md), and `npm run video` records it ([docs/video.md](docs/video.md)).
 - **Integration evidence:** [docs/evidence](docs/evidence/README.md)
 - **Decision log:** [DECISIONS.md](DECISIONS.md), each entry timestamped, with every assumption marked
 

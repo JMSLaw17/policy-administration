@@ -1,6 +1,6 @@
 # Stripe evidence (test mode)
 
-Collected 2026-11-13 12:50:33 UTC from Stripe's API with a test-mode key. Nothing here involves real money.
+Collected 2026-11-13 13:33:02 UTC from Stripe's API with a test-mode key. Nothing here involves real money.
 
 ## Webhook endpoint
 
@@ -11,10 +11,17 @@ Collected 2026-11-13 12:50:33 UTC from Stripe's API with a test-mode key. Nothin
 ## Events Stripe sent to the webhook
 
 Newest first. "Waiting" is how many webhook deliveries Stripe still has outstanding for that event; 0 means the app acknowledged it.
-One Stripe test account serves the deployed app, local development, and the automated tests. This list shows the 34 events for policies on the deployed app, out of the 2187 most recent; the rest came from local and automated testing.
+One Stripe test account serves the deployed app, local development, and the automated tests. This list shows the 41 events for policies on the deployed app, out of the 2194 most recent; the rest came from local and automated testing.
 
 | Time (UTC) | Event | Object | Amount | Status | Policy | Waiting |
 |---|---|---|---|---|---|---|
+| 2026-11-13 13:08:54 | `refund.updated` | `re_3UbKBwGiG…` | $14.00 | succeeded | SBP-2026-0027 | 0 |
+| 2026-11-13 13:08:53 | `refund.created` | `re_3UbKBwGiG…` | $14.00 | succeeded | SBP-2026-0027 | 0 |
+| 2026-11-13 13:08:53 | `refund.updated` | `re_3UbKDLGiG…` | $14.00 | succeeded | SBP-2026-0027 | 0 |
+| 2026-11-13 13:08:52 | `refund.created` | `re_3UbKDLGiG…` | $14.00 | succeeded | SBP-2026-0027 | 0 |
+| 2026-11-13 13:08:26 | `payment_intent.succeeded` | `pi_3UbKDLGiG…` | $14.00 | succeeded | SBP-2026-0027 | 0 |
+| 2026-11-13 13:06:57 | `payment_intent.succeeded` | `pi_3UbKBwGiG…` | $674.00 | succeeded | SBP-2026-0027 | 0 |
+| 2026-11-13 13:06:55 | `payment_intent.succeeded` | `pi_3UbKBuGiG…` | $1095.00 | succeeded | SBP-2026-0027 | 0 |
 | 2026-11-13 12:41:53 | `refund.updated` | `re_3UbJllGiG…` | $14.00 | succeeded | SBP-2026-0026 | 0 |
 | 2026-11-13 12:41:52 | `refund.created` | `re_3UbJllGiG…` | $14.00 | succeeded | SBP-2026-0026 | 0 |
 | 2026-11-13 12:41:52 | `refund.updated` | `re_3UbJnBGiG…` | $14.00 | succeeded | SBP-2026-0026 | 0 |
@@ -54,6 +61,8 @@ One Stripe test account serves the deployed app, local development, and the auto
 
 | Time (UTC) | Refund | Amount | Status | Policy | Against payment |
 |---|---|---|---|---|---|
+| 2026-11-13 13:08:53 | `re_3UbKBwGiG…` | $14.00 | succeeded | SBP-2026-0027 | `pi_3UbKBwGiG…` |
+| 2026-11-13 13:08:52 | `re_3UbKDLGiG…` | $14.00 | succeeded | SBP-2026-0027 | `pi_3UbKDLGiG…` |
 | 2026-11-13 12:41:52 | `re_3UbJllGiG…` | $14.00 | succeeded | SBP-2026-0026 | `pi_3UbJllGiG…` |
 | 2026-11-13 12:41:51 | `re_3UbJnBGiG…` | $14.00 | succeeded | SBP-2026-0026 | `pi_3UbJnBGiG…` |
 | 2026-11-13 12:38:22 | `re_3UbJk3GiG…` | $14.00 | succeeded | SBP-2026-0025 | `pi_3UbJk3GiG…` |
