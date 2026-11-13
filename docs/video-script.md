@@ -2,6 +2,8 @@
 
 A script for the submission video: up to five minutes, showing the transaction in the app. Timings are a guide and add up to about 4:40.
 
+`npm run video` records this script on the deployed app, with a computer voice or your own recordings, and captions. See [video.md](video.md). The steps below are for recording it by hand.
+
 ## Before recording
 
 - Use the deployed app: https://policy-administration.vercel.app

@@ -22,7 +22,9 @@
     "prod:query": "node scripts/prod-query.mjs",
     "clean:deployed": "node scripts/clean-deployed.mjs",
     "evidence": "node scripts/evidence.mjs",
-    "evidence:screenshots": "playwright test --config playwright.evidence.config.ts"
+    "evidence:screenshots": "playwright test --config playwright.evidence.config.ts",
+    "video": "playwright test --config playwright.video.config.ts && node scripts/video-assemble.mjs",
+    "video:assemble": "node scripts/video-assemble.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.1",
