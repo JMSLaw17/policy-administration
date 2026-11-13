@@ -38,6 +38,8 @@ const fake = vi.hoisted(() => ({
   refundStatus: "succeeded",
   /** Makes the next attempt to cancel a payment fail, as when the connection drops. */
   cancelFails: false,
+  /** Runs once, just before Stripe is next asked about a payment: the place other news can arrive. */
+  meanwhile: null as null | (() => Promise<void>),
   /** Disputes as Stripe holds them, by id. */
   disputes: new Map<string, unknown>(),
 }));
@@ -58,7 +60,12 @@ vi.mock("@/lib/integrations/stripe", async () => {
           fake.byKey.set(options.idempotencyKey, intent);
           return intent;
         },
-        retrieve: async (id: string) => fake.intents.get(id)!,
+        retrieve: async (id: string) => {
+          const meanwhile = fake.meanwhile;
+          fake.meanwhile = null;
+          await meanwhile?.();
+          return fake.intents.get(id)!;
+        },
         update: async (id: string, data: { amount: number }) => Object.assign(fake.intents.get(id)!, data),
         cancel: async (id: string) => {
           const intent = fake.intents.get(id)!;
@@ -133,6 +140,7 @@ beforeEach(async () => {
   fake.refundFault = null;
   fake.refundStatus = "succeeded";
   fake.cancelFails = false;
+  fake.meanwhile = null;
   fake.disputes.clear();
 });
 
@@ -362,6 +370,59 @@ describe("opening checkout again after a declined card", () => {
     ]);
     expect(await balance(policyId)).toBe(0);
     expect(fake.refunds).toHaveLength(0);
+  });
+
+  it("closes a declined attempt for good, and doesn't ask Stripe about it again", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "requires_payment_method", "FAILED");
+
+    await startPayment(policyId);
+    expect(intent.status).toBe("canceled");
+    const closed = await db.payment.findUniqueOrThrow({ where: { id: paymentId } });
+    expect(closed).toMatchObject({ status: "FAILED", failureReason: "Your card was declined." });
+    expect(closed.closedAt).not.toBeNull();
+
+    // Opening checkout again goes straight to the open attempt.
+    let asked = false;
+    fake.meanwhile = async () => {
+      asked = true;
+    };
+    await startPayment(policyId);
+    expect(asked).toBe(true); // Stripe was asked about the open attempt...
+    expect(fake.intents.size).toBe(2); // ...and nothing new was created
+  });
+
+  it("doesn't create a second attempt when a decline is recorded while checkout is starting", async () => {
+    const { policyId } = await policyWithCyber();
+    // An older declined attempt, so that starting checkout has to ask Stripe about something,
+    // and the attempt whose form the customer has open.
+    const older = await openPayment(policyId, "requires_payment_method", "FAILED");
+    const inUse = await openPayment(policyId, "requires_payment_method");
+
+    // While checkout is starting, after the declined attempts have been listed, the customer's
+    // card is declined on the open form and the news is recorded. That form can still be retried.
+    fake.meanwhile = async () => {
+      await recordPaymentIntent({
+        ...(inUse.intent as unknown as Stripe.PaymentIntent),
+        last_payment_error: { message: "Your card was declined." } as Stripe.PaymentIntent.LastPaymentError,
+      });
+    };
+    const started = await startPayment(policyId);
+
+    // The reservation saw the new decline, under the policy lock, and created nothing until that
+    // attempt was closed at Stripe. So only the newest attempt can collect.
+    expect(older.intent.status).toBe("canceled");
+    expect(inUse.intent.status).toBe("canceled");
+    expect(started.clientSecret).toBe("pi_3_secret");
+    const collectable = [...fake.intents.values()].filter((i) => i.status !== "canceled");
+    expect(collectable.map((i) => i.id)).toEqual(["pi_3"]);
+    expect(
+      await db.payment.findMany({ where: { policyId }, orderBy: { createdAt: "asc" }, select: { status: true, closedAt: true } }),
+    ).toMatchObject([
+      { status: "FAILED", closedAt: expect.any(Date) },
+      { status: "FAILED", closedAt: expect.any(Date) },
+      { status: "INITIATED", closedAt: null },
+    ]);
   });
 
   it("doesn't offer a new payment while the old one is being processed", async () => {

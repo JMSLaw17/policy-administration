@@ -250,11 +250,18 @@ describe("cancellation (pro-rata, no penalty)", () => {
   });
 
   it("shows the formula's own result and the adjustment on a line that was moved by a cent", () => {
-    expect(
-      formulaFor({ annualPremiumCents: 73_000, days: 10, termDays: 366, amountCents: -1_994, roundingCents: 1 }),
-    ).toBe(
+    expect(formulaFor({ annualPremiumCents: 73_000, days: 10, termDays: 366, amountCents: -1_994 })).toBe(
       "$730.00 × 10 ÷ 366 days = $19.95, adjusted by $0.01 to $19.94 so that this coverage comes to exactly $0.00, because the policy was cancelled from its first day",
     );
+  });
+
+  it("shows the same true arithmetic on the reversal of an adjusted line", () => {
+    // One day of Cyber on a 366-day term is $1.99. The credit was moved to $2.00, and reversing it posts +$2.00.
+    const adjusted = "$730.00 × 1 ÷ 366 days = $1.99, adjusted by $0.01 to $2.00 so that this coverage comes to exactly $0.00, because the policy was cancelled from its first day";
+    expect(formulaFor({ annualPremiumCents: 73_000, days: 1, termDays: 366, amountCents: -200 })).toBe(adjusted);
+    expect(formulaFor({ annualPremiumCents: 73_000, days: 1, termDays: 366, amountCents: 200 })).toBe(adjusted);
+    // Never "= $2.01": the result shown is always what the three numbers come to.
+    expect(formulaFor({ annualPremiumCents: 73_000, days: 1, termDays: 366, amountCents: 200 })).not.toContain("$2.01");
   });
 
   it("leaves a cancellation on any later day rounded line by line, as before", () => {

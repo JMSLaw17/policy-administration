@@ -256,6 +256,10 @@ model Payment {
   status                PaymentStatus @default(INITIATED)
   stripePaymentIntentId String?       @unique
   failureReason         String?
+  /// Set on a declined attempt once Stripe has confirmed it is cancelled and
+  /// can no longer collect. Until then its payment form can still be retried,
+  /// so no other attempt may be created for the policy.
+  closedAt              DateTime?
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
 

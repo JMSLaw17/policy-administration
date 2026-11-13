@@ -24,6 +24,20 @@ const SUPERSEDED_NOTE = "Not submitted. Replaced by a new payment when the amoun
 const RETURNED_NOTE = "Returned by the bank after it had cleared.";
 const CLOSED_NOTES = [CANCELLED_NOTE, SUPERSEDED_NOTE, RETURNED_NOTE];
 
+/**
+ * Attempts that were declined and whose payment form can, as far as we know,
+ * still be retried: Stripe hasn't yet confirmed them cancelled. While a policy
+ * has one of these, no other attempt may be created for it, because both
+ * could collect.
+ */
+const declinedAndStillOpen = (policyId: string) => ({
+  policyId,
+  status: "FAILED" as const,
+  stripePaymentIntentId: { not: null },
+  closedAt: null,
+  failureReason: { notIn: CLOSED_NOTES },
+});
+
 export async function balanceCents(policyId: string): Promise<number> {
   const sum = await db.ledgerEntry.aggregate({ where: { policyId }, _sum: { amountCents: true } });
   return sum._sum.amountCents ?? 0;
@@ -49,7 +63,10 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
     // First find out what became of any earlier attempt that was declined. The amount due
     // is only worked out, and a new attempt only offered, once that is known.
     await settleDeclinedAttempts(policyId);
-    const { payment, due } = await reserveAttempt(policyId);
+    const reserved = await reserveAttempt(policyId);
+    // A decline was recorded in the moment since the check above. Go round and settle it first.
+    if (!reserved) continue;
+    const { payment, due } = reserved;
 
     const intent = payment.stripePaymentIntentId
       ? await stripe().paymentIntents.retrieve(payment.stripePaymentIntentId)
@@ -102,12 +119,19 @@ export async function startPayment(policyId: string): Promise<{ clientSecret: st
     });
     if ((await balanceCents(policyId)) <= 0) throw new PaymentError("This policy has just been paid.");
   }
-  throw new PaymentError("We couldn't start the payment. Please try again.");
+  throw new PaymentError("We couldn't start the payment. Nothing was charged. Please try again.");
 }
 
 /**
  * Finds the policy's open attempt, or creates one for the amount due. Runs
  * under a lock on the policy, so concurrent requests get the same attempt.
+ *
+ * A new attempt is only created if no earlier one can still collect, and that
+ * is checked here, under the same lock a decline is recorded under. Checking
+ * only beforehand leaves a gap: a decline recorded in between would be
+ * missed, a second attempt created, and the first form retried, so both take
+ * the money. If there is such an attempt, nothing is created and null is
+ * returned, for the caller to settle it and come back.
  */
 async function reserveAttempt(policyId: string) {
   return db.$transaction(async (tx) => {
@@ -126,6 +150,7 @@ async function reserveAttempt(policyId: string) {
       orderBy: { createdAt: "desc" },
     });
     if (open) return { payment: open, due };
+    if (await tx.payment.count({ where: declinedAndStillOpen(policyId) })) return null;
     return { payment: await tx.payment.create({ data: { policyId, amountCents: due } }), due };
   });
 }
@@ -182,9 +207,7 @@ async function createIntent(payment: { id: string; policyId: string; amountCents
  * A failed attempt keeps its own record throughout.
  */
 async function settleDeclinedAttempts(policyId: string) {
-  const declined = await db.payment.findMany({
-    where: { policyId, status: "FAILED", stripePaymentIntentId: { not: null }, failureReason: { notIn: CLOSED_NOTES } },
-  });
+  const declined = await db.payment.findMany({ where: declinedAndStillOpen(policyId) });
   const read = (id: string) => stripe().paymentIntents.retrieve(id, { expand: ["payment_method"] });
   for (const attempt of declined) {
     let intent = await read(attempt.stripePaymentIntentId!);
@@ -203,6 +226,10 @@ async function settleDeclinedAttempts(policyId: string) {
     }
     // Paid, being processed, or cancelled: record which.
     await recordPaymentIntent(intent);
+    if (intent.status === "canceled") {
+      // Stripe has confirmed it can no longer collect. It keeps its decline reason.
+      await db.payment.updateMany({ where: { id: attempt.id, status: "FAILED" }, data: { closedAt: new Date() } });
+    }
     if (intent.status === "processing") {
       throw new PaymentError("A payment is already being processed. It can take a little while to clear.");
     }
@@ -335,7 +362,7 @@ export async function syncOpenPayments(policyId: string) {
       policyId,
       stripePaymentIntentId: { not: null },
       // Not yet submitted, or declined but still open for another try.
-      OR: [{ status: "INITIATED" }, { status: "FAILED", failureReason: { notIn: CLOSED_NOTES } }],
+      OR: [{ status: "INITIATED" }, { status: "FAILED", closedAt: null, failureReason: { notIn: CLOSED_NOTES } }],
     },
   });
   if (open.length === 0) return;

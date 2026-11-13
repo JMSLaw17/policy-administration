@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/lib/db";
-import { PolicyRuleError, todayISO } from "@/lib/engine";
+import { formatUSD, formulaFor, PolicyRuleError, proRate, todayISO } from "@/lib/engine";
 import { claimsForPolicy, decideClaim, fileClaim, payClaim } from "@/lib/policies/claims";
 import { commissionForPolicy } from "@/lib/policies/commissions";
 import { updateCustomerDetails } from "@/lib/policies/details";
@@ -718,6 +718,68 @@ describe("confirming a renewal the broker was shown", () => {
     ]);
     expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
     expect(await db.policy.count()).toBe(2);
+  });
+});
+
+describe("a policy cancelled from its first day, where a line was moved by a cent", () => {
+  const ADJUSTED =
+    "$730.00 × 1 ÷ 366 days = $1.99, adjusted by $0.01 to $2.00 so that this coverage comes to exactly $0.00, because the policy was cancelled from its first day";
+
+  /**
+   * A 366-day term with Cyber on for a single day, then cancelled from the first day. The day
+   * is chosen so that the charge and the first credit differ by $2.00 while a day costs $1.99:
+   * the case where a cent has to be found.
+   */
+  async function cancelledFromDayOne() {
+    const day = (n: number) => new Date(Date.UTC(2027, 9, 1) + n * 86_400_000).toISOString().slice(0, 10);
+    const cyberFor = (days: number) => proRate(73_000, days, 366);
+    let on = 1;
+    while (cyberFor(366 - on) - cyberFor(365 - on) !== 200) on++;
+
+    const policy = await issue(["GL"], "2027-10-01");
+    await addCyber(policy.id, day(on));
+    await applyChange(policy.id, { kind: "COVERAGE_CHANGE", effectiveDate: day(on + 1), add: [], remove: ["CYBER"] }, brokerId);
+    const cancellation = await applyChange(policy.id, { kind: "CANCELLATION", effectiveDate: "2027-10-01" }, brokerId);
+    return { policy, cancellationId: cancellation.transaction.id };
+  }
+  const shown = (row: { calc: unknown; amountCents: number }) =>
+    formulaFor({ ...(row.calc as Parameters<typeof formulaFor>[0]), amountCents: row.amountCents });
+
+  it("comes to exactly zero, and the moved line shows its real arithmetic", async () => {
+    const { policy } = await cancelledFromDayOne();
+    const view = (await loadPolicyView(policy.id))!;
+    expect(view.balanceCents).toBe(0);
+    const credit = view.statement.find((r) => r.coverageCode === "CYBER" && r.description.includes("unused days after cancellation"))!;
+    expect(credit).toMatchObject({ kind: "CREDIT", amountCents: -200, calc: { days: 1, roundingCents: -1 } });
+    expect(shown(credit)).toBe(ADJUSTED);
+  });
+
+  it("shows the same arithmetic when that line is reversed by a correction, in the preview and on the statement", async () => {
+    const { policy, cancellationId } = await cancelledFromDayOne();
+    const laterDate = {
+      kind: "CORRECTION" as const,
+      transactionId: cancellationId,
+      event: { type: "CANCELLATION" as const, effectiveDate: "2028-04-01" },
+    };
+
+    // The broker's preview of the reversal: +$2.00, cancelling the −$2.00 credit.
+    const preview = await previewChange(policy.id, laterDate);
+    const previewed = preview.reversals.find((l) => l.coverageCode === "CYBER")!;
+    expect(previewed).toMatchObject({ amountCents: 200, calc: { days: 1, roundingCents: 1 } });
+    expect(shown(previewed)).toBe(ADJUSTED);
+
+    // And the line as posted.
+    await applyChange(policy.id, laterDate, brokerId, preview.fingerprint);
+    const view = (await loadPolicyView(policy.id))!;
+    const reversal = view.statement.find((r) => r.kind === "REVERSAL" && r.coverageCode === "CYBER")!;
+    expect(reversal).toMatchObject({ amountCents: 200, calc: { days: 1, roundingCents: 1 } });
+    expect(shown(reversal)).toBe(ADJUSTED);
+
+    // Every line on the statement shows arithmetic that is true: the result after "=" is what the formula comes to.
+    for (const row of view.statement.filter((r) => r.calc)) {
+      const result = proRate(row.calc!.annualPremiumCents, row.calc!.days, row.calc!.termDays);
+      expect(shown(row)).toContain(`days = ${formatUSD(result)}`);
+    }
   });
 });
 

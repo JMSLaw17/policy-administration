@@ -344,7 +344,7 @@ async function post(tx: Tx, step: Step, userId: string) {
         originTransactionId: original.originTransactionId,
         reversesEntryId: original.id,
         coverageCode: original.coverageCode,
-        calc: original.calc ?? undefined,
+        calc: original.calc ? reversed(original.calc as LineCalc) : undefined,
       },
     });
   }
@@ -708,7 +708,7 @@ async function plan(tx: Tx, policyId: string, request: ChangeRequest): Promise<P
         coverageCode: l.coverageCode,
         description: `Reversal: ${descriptionOf.get(l.entryId)}`,
         amountCents: -l.amountCents,
-        calc: calcOf(l),
+        calc: reversed(calcOf(l)),
       })),
       postings: toPost.map((l) => ({
         coverageCode: l.coverageCode,
@@ -765,6 +765,14 @@ const calcOf = (l: PremiumLine): LineCalc => ({
   to: l.to,
   ...(l.roundingCents ? { roundingCents: l.roundingCents } : {}),
 });
+
+/**
+ * The calculation behind a reversal: the original line's, with any rounding
+ * adjustment turned round as well. A reversal has the opposite amount, so the
+ * amount by which it differs from its formula is the opposite too.
+ */
+const reversed = (calc: LineCalc): LineCalc =>
+  calc.roundingCents ? { ...calc, roundingCents: -calc.roundingCents } : calc;
 
 function entryData(
   policyId: string,
