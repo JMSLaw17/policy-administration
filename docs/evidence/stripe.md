@@ -1,6 +1,6 @@
 # Stripe evidence (test mode)
 
-Collected 2026-11-13 12:40:13 UTC from Stripe's API with a test-mode key. Nothing here involves real money.
+Collected 2026-11-13 12:50:33 UTC from Stripe's API with a test-mode key. Nothing here involves real money.
 
 ## Webhook endpoint
 
@@ -11,10 +11,15 @@ Collected 2026-11-13 12:40:13 UTC from Stripe's API with a test-mode key. Nothin
 ## Events Stripe sent to the webhook
 
 Newest first. "Waiting" is how many webhook deliveries Stripe still has outstanding for that event; 0 means the app acknowledged it.
-One Stripe test account serves the deployed app, local development, and the automated tests. This list shows the 29 events for policies on the deployed app, out of the 2182 most recent; the rest came from local and automated testing.
+One Stripe test account serves the deployed app, local development, and the automated tests. This list shows the 34 events for policies on the deployed app, out of the 2187 most recent; the rest came from local and automated testing.
 
 | Time (UTC) | Event | Object | Amount | Status | Policy | Waiting |
 |---|---|---|---|---|---|---|
+| 2026-11-13 12:41:53 | `refund.updated` | `re_3UbJllGiG…` | $14.00 | succeeded | SBP-2026-0026 | 0 |
+| 2026-11-13 12:41:52 | `refund.created` | `re_3UbJllGiG…` | $14.00 | succeeded | SBP-2026-0026 | 0 |
+| 2026-11-13 12:41:52 | `refund.updated` | `re_3UbJnBGiG…` | $14.00 | succeeded | SBP-2026-0026 | 0 |
+| 2026-11-13 12:41:51 | `refund.created` | `re_3UbJnBGiG…` | $14.00 | succeeded | SBP-2026-0026 | 0 |
+| 2026-11-13 12:41:24 | `payment_intent.succeeded` | `pi_3UbJnBGiG…` | $14.00 | succeeded | SBP-2026-0026 | 0 |
 | 2026-11-13 12:39:54 | `payment_intent.succeeded` | `pi_3UbJllGiG…` | $674.00 | succeeded | SBP-2026-0026 | 0 |
 | 2026-11-13 12:39:52 | `payment_intent.succeeded` | `pi_3UbJlkGiG…` | $1095.00 | succeeded | SBP-2026-0026 | 0 |
 | 2026-11-13 12:38:23 | `refund.updated` | `re_3UbJk3GiG…` | $14.00 | succeeded | SBP-2026-0025 | 0 |
@@ -49,6 +54,8 @@ One Stripe test account serves the deployed app, local development, and the auto
 
 | Time (UTC) | Refund | Amount | Status | Policy | Against payment |
 |---|---|---|---|---|---|
+| 2026-11-13 12:41:52 | `re_3UbJllGiG…` | $14.00 | succeeded | SBP-2026-0026 | `pi_3UbJllGiG…` |
+| 2026-11-13 12:41:51 | `re_3UbJnBGiG…` | $14.00 | succeeded | SBP-2026-0026 | `pi_3UbJnBGiG…` |
 | 2026-11-13 12:38:22 | `re_3UbJk3GiG…` | $14.00 | succeeded | SBP-2026-0025 | `pi_3UbJk3GiG…` |
 | 2026-11-13 12:38:21 | `re_3UbJkCGiG…` | $14.00 | succeeded | SBP-2026-0025 | `pi_3UbJkCGiG…` |
 | 2026-11-13 09:20:40 | `re_3UaxL0GiG…` | $14.00 | succeeded | SBP-2026-0002 | `pi_3UaxL0GiG…` |
