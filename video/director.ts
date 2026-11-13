@@ -52,8 +52,9 @@ export function checkTools() {
  * knows how long to hold each one.
  *
  * For each line, in order of preference: your own recording in
- * video/voice/<id>.(m4a|wav|aiff|mp3); the Mac's built-in `say` voice (or
- * espeak-ng elsewhere); or no sound at all, with the line shown as a caption
+ * video/voice/<id>.(m4a|wav|aiff|mp3); the Kokoro AI voice made by
+ * scripts/video-voice.mjs, if its file matches the line's current wording;
+ * the Mac's built-in `say` voice (or espeak-ng elsewhere); or no sound at all, with the line shown as a caption
  * for an estimated reading time. VIDEO_NARRATION=captions skips the voice.
  */
 export function prepareNarration(): Record<BeatId, Line> {
@@ -61,6 +62,10 @@ export function prepareNarration(): Record<BeatId, Line> {
   fs.mkdirSync(dir, { recursive: true });
   const captionsOnly = process.env.VIDEO_NARRATION === "captions";
   const engine = captionsOnly ? null : found("say", ["-v", "?"]) ? "say" : found("espeak-ng") ? "espeak-ng" : null;
+  const kokoroDir = path.join(OUT, "kokoro");
+  const kokoroFile = path.join(kokoroDir, "manifest.json");
+  const kokoro: Record<string, { text: string }> =
+    process.env.VIDEO_TTS === "say" || !fs.existsSync(kokoroFile) ? {} : JSON.parse(fs.readFileSync(kokoroFile, "utf8"));
   const lines = {} as Record<BeatId, Line>;
   for (const [id, text] of Object.entries(NARRATION) as [BeatId, string][]) {
     const own = ["m4a", "wav", "aiff", "mp3"].map((ext) => path.join("video", "voice", `${id}.${ext}`)).find((f) => fs.existsSync(f));
@@ -69,6 +74,9 @@ export function prepareNarration(): Record<BeatId, Line> {
     if (own && !captionsOnly) {
       audio = path.resolve(own);
       source = "your recording";
+    } else if (!captionsOnly && kokoro[id]?.text === text && fs.existsSync(path.join(kokoroDir, `${id}.wav`))) {
+      audio = path.resolve(kokoroDir, `${id}.wav`);
+      source = "kokoro";
     } else if (engine === "say") {
       audio = path.resolve(dir, `${id}.aiff`);
       const voice = process.env.VIDEO_VOICE ? ["-v", process.env.VIDEO_VOICE] : [];

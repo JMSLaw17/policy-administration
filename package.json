@@ -23,8 +23,9 @@
     "clean:deployed": "node scripts/clean-deployed.mjs",
     "evidence": "node scripts/evidence.mjs",
     "evidence:screenshots": "playwright test --config playwright.evidence.config.ts",
-    "video": "playwright test --config playwright.video.config.ts && node scripts/video-assemble.mjs",
-    "video:assemble": "node scripts/video-assemble.mjs"
+    "video": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/video-voice.mjs && playwright test --config playwright.video.config.ts && node scripts/video-assemble.mjs",
+    "video:assemble": "node scripts/video-assemble.mjs",
+    "video:voice": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/video-voice.mjs"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.1",
