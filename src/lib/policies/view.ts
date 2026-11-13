@@ -135,17 +135,10 @@ export async function loadPolicyView(policyId: string) {
   );
   // Money the bank took back, by the payment it was taken from.
   const paymentLine = new Map(policy.ledger.filter((e) => e.paymentId).map((e) => [e.paymentId!, lineOf.get(e.id)!]));
-  const paymentOfEntry = new Map(policy.ledger.filter((e) => e.paymentId).map((e) => [e.id, e.paymentId!]));
-  // The payment a line takes money back from, if it is a return. A return is linked to its
-  // record. For a short time it was instead written as a reversal of the payment's own line,
-  // and a line like that is read the same way.
-  const returnOf = (e: (typeof policy.ledger)[number]) =>
-    e.paymentReturn?.paymentId ??
-    (e.kind === "PAYMENT" && e.reversesEntryId ? (paymentOfEntry.get(e.reversesEntryId) ?? null) : null);
   const returnedFrom = new Map<string, number>();
   for (const e of policy.ledger) {
-    const from = returnOf(e);
-    if (from) returnedFrom.set(from, (returnedFrom.get(from) ?? 0) + e.amountCents);
+    if (!e.paymentReturn) continue;
+    returnedFrom.set(e.paymentReturn.paymentId, (returnedFrom.get(e.paymentReturn.paymentId) ?? 0) + e.amountCents);
   }
   let running = 0;
   const statement: StatementRow[] = policy.ledger.map((e, i) => {
@@ -165,7 +158,7 @@ export async function loadPolicyView(policyId: string) {
       reversedByLine: reversal ? lineOf.get(reversal.id)! : null,
       reversedBySeq: reversal ? seqOf(reversal.postedByTransactionId) : null,
       reversesLine: e.reversesEntryId ? lineOf.get(e.reversesEntryId)! : null,
-      returnsLine: returnOf(e) ? (paymentLine.get(returnOf(e)!) ?? null) : null,
+      returnsLine: e.paymentReturn ? (paymentLine.get(e.paymentReturn.paymentId) ?? null) : null,
       returnedCents: e.paymentId ? (returnedFrom.get(e.paymentId) ?? 0) : 0,
       paymentId: e.paymentId,
       refundId: e.refundId,

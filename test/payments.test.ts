@@ -756,39 +756,51 @@ describe("a payment the customer's bank takes back after it cleared", () => {
     });
   });
 
-  it("isn't counted again when it was stored in the earlier format, without a record of the dispute", async () => {
-    const { policyId } = await policyWithCyber();
-    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
-    await stripeConfirms(intent);
-    const paid = GL + CYBER_FROM_OCT_25;
-    // How a return was first written: a line reversing the payment's own line, and nothing else.
-    const paymentLine = await db.ledgerEntry.findUniqueOrThrow({ where: { paymentId } });
-    await db.ledgerEntry.create({
-      data: {
-        policyId,
-        kind: "PAYMENT",
-        amountCents: paid,
-        description: "Payment returned by the bank (insufficient funds)",
-        reversesEntryId: paymentLine.id,
-      },
-    });
-    await db.payment.update({
-      where: { id: paymentId },
-      data: { status: "FAILED", failureReason: "Returned by the bank after it had cleared." },
-    });
-    const before = (await loadPolicyView(policyId))!;
-    expect(before.balanceCents).toBe(paid);
+  describe("leaves only what remains of the payment available to refund", () => {
+    /**
+     * A $1,095.00 payment, some of which the bank takes back. The policy is then cancelled from
+     * its first day and the customer given a further $200.00 credit, so they are owed more than
+     * the payment can carry. What gets refunded is therefore exactly what is left of the payment.
+     */
+    async function refundedAfter(returns: [disputeId: string, cents: number][]) {
+      const policy = await issuePolicy({ customerId, startDate: "2026-10-01", coverageCodes: ["GL"], userId: brokerId });
+      const { intent } = await openPayment(policy.id, "processing", "PENDING");
+      await stripeConfirms(intent);
+      for (const [id, cents] of returns) await recordDispute(dispute(intent.id, cents, "lost", id));
 
-    // Stripe reports the same dispute again. The money has already been taken back once.
-    await recordDispute(dispute(intent.id, paid));
-    await recordDispute(dispute(intent.id, paid));
-    const after = (await loadPolicyView(policyId))!;
-    expect(after.balanceCents).toBe(paid);
-    expect(after.statement).toHaveLength(before.statement.length);
-    // The older line reads as a return on the statement, like a newer one.
-    expect(after.statement.at(-1)).toMatchObject({ kind: "PAYMENT", amountCents: paid, returnsLine: after.statement.length - 1 });
-    expect(after.statement.at(-2)).toMatchObject({ kind: "PAYMENT", returnedCents: paid });
-    expect(after.payments[0]).toMatchObject({ status: "FAILED", returnedCents: paid });
+      await applyChange(policy.id, { kind: "CANCELLATION", effectiveDate: "2026-10-01" }, brokerId);
+      await db.ledgerEntry.create({
+        data: { policyId: policy.id, kind: "CREDIT", amountCents: -20_000, description: "Goodwill credit" },
+      });
+      const result = await refundCredit(policy.id);
+      // Everything asked of Stripe was against this one payment.
+      expect(fake.refunds.every((r) => r.payment_intent === intent.id)).toBe(true);
+      return { ...result, sentToStripe: fake.refunds.map((r) => r.amount) };
+    }
+    const beyondThePayment = /\$200\.00 of the credit couldn't be refunded to a card payment/;
+
+    it("$995.00 after a $100.00 return", async () => {
+      const refund = await refundedAfter([["dp_first", 10_000]]);
+      expect(refund).toMatchObject({ refundedCents: 99_500, sentToStripe: [99_500] });
+      expect(refund.message).toMatch(beyondThePayment);
+    });
+
+    it("still $995.00 when the same $100.00 return is reported again", async () => {
+      const refund = await refundedAfter([
+        ["dp_first", 10_000],
+        ["dp_first", 10_000],
+      ]);
+      expect(refund).toMatchObject({ refundedCents: 99_500, sentToStripe: [99_500] });
+    });
+
+    it("$945.00 after a separate $50.00 return as well", async () => {
+      const refund = await refundedAfter([
+        ["dp_first", 10_000],
+        ["dp_second", 5_000],
+      ]);
+      expect(refund).toMatchObject({ refundedCents: 94_500, sentToStripe: [94_500] });
+      expect(refund.message).toMatch(beyondThePayment);
+    });
   });
 
   it("can't be refunded against", async () => {

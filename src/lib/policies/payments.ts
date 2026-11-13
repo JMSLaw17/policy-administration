@@ -710,19 +710,18 @@ export async function recordDispute(dispute: Stripe.Dispute) {
 }
 
 /**
- * How much of a payment the bank has taken back, from the lines on the
- * statement. Null if the payment isn't on the statement yet.
+ * How much of a payment the bank has taken back. Null if the payment isn't on
+ * the statement yet.
  *
- * A return is a line linked to a PaymentReturn. For a short time returns were
- * instead written as a line that reverses the payment's own line, with no
- * record of the dispute. Any such line still counts, so that hearing about
- * its dispute again can't take the money back a second time.
+ * There is one source for returned money: the statement lines linked to a
+ * PaymentReturn record. The statement, the payment's status, and how much of
+ * the payment is left to refund all read the amounts posted on those lines.
  */
 async function returnedSoFar(tx: Prisma.TransactionClient, paymentId: string) {
   const paid = await tx.ledgerEntry.findUnique({ where: { paymentId } });
   if (!paid) return null;
   const returned = await tx.ledgerEntry.aggregate({
-    where: { OR: [{ paymentReturn: { paymentId } }, { kind: "PAYMENT", reversesEntryId: paid.id }] },
+    where: { paymentReturn: { paymentId } },
     _sum: { amountCents: true },
   });
   // The payment line is negative.

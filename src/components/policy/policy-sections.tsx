@@ -190,8 +190,6 @@ const kindLabel: Record<StatementRow["kind"], string> = {
   REFUND: "Refund",
 };
 
-/** A payment or refund line, as opposed to a premium line. */
-const isMoney = (row: StatementRow) => row.kind === "PAYMENT" || row.kind === "REFUND";
 /** A line that undoes an earlier payment (the bank took money back) or refund (it failed). */
 const undoesMoney = (row: StatementRow) => row.returnsLine !== null || (row.kind === "REFUND" && row.reversesLine !== null);
 /** A payment the bank has taken back in full. */
@@ -222,7 +220,7 @@ export function StatementCard({ view }: { view: View }) {
               <td className="px-5 py-3 whitespace-nowrap text-slate-600">{dateTime(row.postedAt)}</td>
               <td className="px-5 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className={(row.reversedByLine && row.kind !== "PAYMENT") || fullyReturned(row) ? "text-slate-500 line-through decoration-slate-400" : "text-slate-900"}>
+                  <span className={row.reversedByLine || fullyReturned(row) ? "text-slate-500 line-through decoration-slate-400" : "text-slate-900"}>
                     {row.description}
                   </span>
                   {undoesMoney(row) ? (
@@ -236,10 +234,12 @@ export function StatementCard({ view }: { view: View }) {
                   {row.returnedCents > 0 && (
                     <Badge tone="red">{fullyReturned(row) ? "Returned by the bank" : "Partly returned by the bank"}</Badge>
                   )}
-                  {row.reversedByLine && row.kind === "REFUND" && <Badge tone="red">Did not go through</Badge>}
-                  {row.reversedByLine && !isMoney(row) && (
-                    <Badge tone="amber">Superseded by correction #{row.reversedBySeq}</Badge>
-                  )}
+                  {row.reversedByLine &&
+                    (row.kind === "REFUND" ? (
+                      <Badge tone="red">Did not go through</Badge>
+                    ) : (
+                      <Badge tone="amber">Superseded by correction #{row.reversedBySeq}</Badge>
+                    ))}
                 </div>
                 <details className="mt-1 text-slate-600">
                   <summary className="cursor-pointer text-xs text-indigo-600 hover:text-indigo-500">
@@ -363,9 +363,9 @@ function RowExplanation({ row }: { row: StatementRow }) {
           </dd>
         </>
       )}
-      {row.reversedByLine && row.kind !== "PAYMENT" && (
+      {row.reversedByLine && (
         <>
-          <dt className="text-slate-500">{isMoney(row) ? "Cancelled" : "Superseded"}</dt>
+          <dt className="text-slate-500">{row.kind === "REFUND" ? "Cancelled" : "Superseded"}</dt>
           <dd>
             Cancelled out by{" "}
             <a className="text-indigo-600 underline" href={`#line-${row.reversedByLine}`}>
