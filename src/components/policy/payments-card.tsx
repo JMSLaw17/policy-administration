@@ -15,7 +15,9 @@ const dateTime = (iso: string) =>
   }).format(new Date(iso));
 
 function StatusBadge({ status }: { status: "INITIATED" | "PENDING" | "SUCCEEDED" | "FAILED" }) {
-  if (status === "INITIATED") return <Badge>Not submitted</Badge>;
+  // The form may be untouched, or the card may be in and waiting on the bank's authentication.
+  // "Not completed" is true of both.
+  if (status === "INITIATED") return <Badge>Not completed</Badge>;
   if (status === "SUCCEEDED") return <Badge tone="green">Succeeded</Badge>;
   if (status === "FAILED") return <Badge tone="red">Failed</Badge>;
   return <Badge tone="amber">Pending</Badge>;
