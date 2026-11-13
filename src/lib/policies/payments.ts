@@ -197,11 +197,11 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
   if (intent.status === "succeeded") {
     await db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${payment.policyId} FOR UPDATE`;
-      // Read again under the lock: the copy above may be out of date.
-      const current = await tx.payment.findUniqueOrThrow({ where: { id: payment.id } });
       // A payment the bank took back in full stays returned. Stripe still calls
       // the PaymentIntent "succeeded", and hearing that again changes nothing.
-      if (current.failureReason === RETURNED_NOTE) return;
+      // This is judged from the amounts on the statement, not from the status
+      // or its wording, which older news could have overwritten.
+      if (await keepReturned(tx, payment.id)) return;
       // The status is set whether or not the statement line is already there,
       // so a payment that some older news marked pending is put right.
       await tx.payment.update({
@@ -230,34 +230,42 @@ export async function recordPaymentIntent(intent: Stripe.PaymentIntent) {
     return;
   }
 
-  // News can arrive out of order: a "processing" notice can be handled after
-  // the payment has succeeded. So every write below applies only to a payment
-  // that hasn't succeeded, checked in the write itself and not from the copy
-  // read above, which may be out of date by now. A completed payment is never
-  // downgraded.
-  const unlessSucceeded = { id: payment.id, status: { not: "SUCCEEDED" as const } };
-  const unlessSucceededOr = (status: "FAILED" | "PENDING") => ({
-    id: payment.id,
-    status: { notIn: ["SUCCEEDED" as const, status] },
-  });
+  // News can arrive out of order: a "processing", "declined" or "cancelled"
+  // notice can be handled after the payment has settled. A payment that is on
+  // the statement has settled, whatever has happened to it since (it stands,
+  // or the bank took it back), so news like that is out of date and changes
+  // nothing. This is checked under the policy lock, against the statement
+  // itself, and not from the copy read above.
+  await db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Policy" WHERE id = ${payment.policyId} FOR UPDATE`;
+    if (await tx.ledgerEntry.findUnique({ where: { paymentId: payment.id } })) {
+      await keepReturned(tx, payment.id);
+      return;
+    }
+    const unlessSucceeded = { id: payment.id, status: { not: "SUCCEEDED" as const } };
+    const unlessSucceededOr = (status: "FAILED" | "PENDING") => ({
+      id: payment.id,
+      status: { notIn: ["SUCCEEDED" as const, status] },
+    });
 
-  if (intent.status === "canceled") {
-    // Keep the original decline reason if there was one.
-    await db.payment.updateMany({
-      where: unlessSucceededOr("FAILED"),
-      data: { status: "FAILED", failureReason: CANCELLED_NOTE },
-    });
-  } else if (intent.status === "requires_payment_method" && intent.last_payment_error) {
-    await db.payment.updateMany({
-      where: unlessSucceeded,
-      data: { status: "FAILED", failureReason: intent.last_payment_error.message ?? "The payment was declined." },
-    });
-  } else if (intent.status === "processing") {
-    await db.payment.updateMany({
-      where: unlessSucceededOr("PENDING"),
-      data: { status: "PENDING", failureReason: null },
-    });
-  }
+    if (intent.status === "canceled") {
+      // Keep the original decline reason if there was one.
+      await tx.payment.updateMany({
+        where: unlessSucceededOr("FAILED"),
+        data: { status: "FAILED", failureReason: CANCELLED_NOTE },
+      });
+    } else if (intent.status === "requires_payment_method" && intent.last_payment_error) {
+      await tx.payment.updateMany({
+        where: unlessSucceeded,
+        data: { status: "FAILED", failureReason: intent.last_payment_error.message ?? "The payment was declined." },
+      });
+    } else if (intent.status === "processing") {
+      await tx.payment.updateMany({
+        where: unlessSucceededOr("PENDING"),
+        data: { status: "PENDING", failureReason: null },
+      });
+    }
+  });
 }
 
 /** Refunds any credit a payment left behind. A failure here must never undo the payment. */
@@ -425,7 +433,7 @@ export async function refundCredit(
 
     const payments = await tx.payment.findMany({
       where: { policyId, status: "SUCCEEDED" },
-      include: { refunds: { where: { status: { not: "FAILED" } } }, returns: true },
+      include: { refunds: { where: { status: { not: "FAILED" } } }, returns: { include: { ledgerEntry: true } } },
     });
     const { allocations, shortfallCents } = allocateRefund(
       credit,
@@ -434,7 +442,8 @@ export async function refundCredit(
         amountCents: p.amountCents,
         // Money the bank has taken back is no longer there to refund, any more than money already refunded.
         alreadyRefundedCents:
-          p.refunds.reduce((s, r) => s + r.amountCents, 0) + p.returns.reduce((s, r) => s + r.amountCents, 0),
+          p.refunds.reduce((s, r) => s + r.amountCents, 0) +
+          p.returns.reduce((s, r) => s + (r.ledgerEntry?.amountCents ?? 0), 0),
         paidAt: p.createdAt,
       })),
     );
@@ -701,22 +710,52 @@ export async function recordDispute(dispute: Stripe.Dispute) {
 }
 
 /**
+ * How much of a payment the bank has taken back, from the lines on the
+ * statement. Null if the payment isn't on the statement yet.
+ *
+ * A return is a line linked to a PaymentReturn. For a short time returns were
+ * instead written as a line that reverses the payment's own line, with no
+ * record of the dispute. Any such line still counts, so that hearing about
+ * its dispute again can't take the money back a second time.
+ */
+async function returnedSoFar(tx: Prisma.TransactionClient, paymentId: string) {
+  const paid = await tx.ledgerEntry.findUnique({ where: { paymentId } });
+  if (!paid) return null;
+  const returned = await tx.ledgerEntry.aggregate({
+    where: { OR: [{ paymentReturn: { paymentId } }, { kind: "PAYMENT", reversesEntryId: paid.id }] },
+    _sum: { amountCents: true },
+  });
+  // The payment line is negative.
+  return { paidCents: -paid.amountCents, returnedCents: returned._sum.amountCents ?? 0 };
+}
+
+/**
+ * If the bank has taken a payment back in full, makes sure it is marked as
+ * returned and says so. A payment taken back in full is no longer a payment,
+ * whatever Stripe goes on to say about the PaymentIntent.
+ */
+async function keepReturned(tx: Prisma.TransactionClient, paymentId: string) {
+  const sums = await returnedSoFar(tx, paymentId);
+  if (!sums || sums.returnedCents < sums.paidCents) return false;
+  await tx.payment.update({ where: { id: paymentId }, data: { status: "FAILED", failureReason: RETURNED_NOTE } });
+  return true;
+}
+
+/**
  * Puts on the statement any of a payment's returns that aren't there yet.
  * Does nothing until the payment itself is on the statement, because there is
  * nothing to take back before then. Runs under the caller's lock on the policy.
  */
 async function postReturns(tx: Prisma.TransactionClient, paymentId: string) {
-  const paid = await tx.ledgerEntry.findUnique({ where: { paymentId } });
-  if (!paid) return;
+  const sums = await returnedSoFar(tx, paymentId);
+  if (!sums) return;
   const returns = await tx.paymentReturn.findMany({
-    where: { paymentId },
-    include: { ledgerEntry: true },
+    where: { paymentId, ledgerEntry: null },
     orderBy: { createdAt: "asc" },
   });
-  // The payment line is negative. What the bank takes back can never be more than was paid.
-  let left = -paid.amountCents - returns.reduce((sum, r) => sum + (r.ledgerEntry?.amountCents ?? 0), 0);
+  // What the bank takes back can never be more than was paid.
+  let left = sums.paidCents - sums.returnedCents;
   for (const r of returns) {
-    if (r.ledgerEntry) continue;
     const amountCents = Math.min(r.amountCents, left);
     if (amountCents <= 0) continue;
     await tx.ledgerEntry.create({
@@ -731,7 +770,5 @@ async function postReturns(tx: Prisma.TransactionClient, paymentId: string) {
     left -= amountCents;
   }
   // A payment taken back in full is no longer a payment. One taken back in part still is.
-  if (left <= 0) {
-    await tx.payment.update({ where: { id: paymentId }, data: { status: "FAILED", failureReason: RETURNED_NOTE } });
-  }
+  await keepReturned(tx, paymentId);
 }

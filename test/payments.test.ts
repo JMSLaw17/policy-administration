@@ -707,6 +707,90 @@ describe("a payment the customer's bank takes back after it cleared", () => {
     expect(await db.integrationEvent.count({ where: { eventType: "charge.dispute.closed" } })).toBe(2);
   });
 
+  it("stays returned whatever older news about the payment is replayed", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    const paid = GL + CYBER_FROM_OCT_25;
+    await recordDispute(dispute(intent.id, paid));
+    const lines = (await loadPolicyView(policyId))!.statement.length;
+    const status = async () => {
+      const p = await db.payment.findUniqueOrThrow({ where: { id: paymentId } });
+      return [p.status, p.failureReason];
+    };
+    const returned = ["FAILED", "Returned by the bank after it had cleared."];
+
+    // "Processing", then "succeeded": the pair that used to relabel it as a successful payment.
+    const news = intent as unknown as Stripe.PaymentIntent;
+    await recordPaymentIntent({ ...news, status: "processing" } as Stripe.PaymentIntent);
+    expect(await status()).toEqual(returned);
+    await recordPaymentIntent({ ...news, status: "succeeded" } as Stripe.PaymentIntent);
+    expect(await status()).toEqual(returned);
+    // A late decline or cancellation doesn't change it either.
+    await recordPaymentIntent({
+      ...news,
+      status: "requires_payment_method",
+      last_payment_error: { message: "Your card was declined." },
+    } as Stripe.PaymentIntent);
+    await recordPaymentIntent({ ...news, status: "canceled" } as Stripe.PaymentIntent);
+    expect(await status()).toEqual(returned);
+
+    const view = (await loadPolicyView(policyId))!;
+    expect(view.balanceCents).toBe(paid);
+    expect(view.statement).toHaveLength(lines);
+  });
+
+  it("is put right if it was left marked as a successful payment", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    await recordDispute(dispute(intent.id, GL + CYBER_FROM_OCT_25));
+    // The state the earlier code could leave behind.
+    await db.payment.update({ where: { id: paymentId }, data: { status: "SUCCEEDED", failureReason: null } });
+
+    // The amounts on the statement say it was returned in full, so the next news about it repairs the status.
+    await stripeConfirms(intent);
+    expect(await db.payment.findUniqueOrThrow({ where: { id: paymentId } })).toMatchObject({
+      status: "FAILED",
+      failureReason: "Returned by the bank after it had cleared.",
+    });
+  });
+
+  it("isn't counted again when it was stored in the earlier format, without a record of the dispute", async () => {
+    const { policyId } = await policyWithCyber();
+    const { intent, paymentId } = await openPayment(policyId, "processing", "PENDING");
+    await stripeConfirms(intent);
+    const paid = GL + CYBER_FROM_OCT_25;
+    // How a return was first written: a line reversing the payment's own line, and nothing else.
+    const paymentLine = await db.ledgerEntry.findUniqueOrThrow({ where: { paymentId } });
+    await db.ledgerEntry.create({
+      data: {
+        policyId,
+        kind: "PAYMENT",
+        amountCents: paid,
+        description: "Payment returned by the bank (insufficient funds)",
+        reversesEntryId: paymentLine.id,
+      },
+    });
+    await db.payment.update({
+      where: { id: paymentId },
+      data: { status: "FAILED", failureReason: "Returned by the bank after it had cleared." },
+    });
+    const before = (await loadPolicyView(policyId))!;
+    expect(before.balanceCents).toBe(paid);
+
+    // Stripe reports the same dispute again. The money has already been taken back once.
+    await recordDispute(dispute(intent.id, paid));
+    await recordDispute(dispute(intent.id, paid));
+    const after = (await loadPolicyView(policyId))!;
+    expect(after.balanceCents).toBe(paid);
+    expect(after.statement).toHaveLength(before.statement.length);
+    // The older line reads as a return on the statement, like a newer one.
+    expect(after.statement.at(-1)).toMatchObject({ kind: "PAYMENT", amountCents: paid, returnsLine: after.statement.length - 1 });
+    expect(after.statement.at(-2)).toMatchObject({ kind: "PAYMENT", returnedCents: paid });
+    expect(after.payments[0]).toMatchObject({ status: "FAILED", returnedCents: paid });
+  });
+
   it("can't be refunded against", async () => {
     const { policyId, cyberChangeId } = await policyWithCyber();
     const { intent } = await openPayment(policyId, "processing", "PENDING");

@@ -222,7 +222,7 @@ export function StatementCard({ view }: { view: View }) {
               <td className="px-5 py-3 whitespace-nowrap text-slate-600">{dateTime(row.postedAt)}</td>
               <td className="px-5 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className={row.reversedByLine || fullyReturned(row) ? "text-slate-500 line-through decoration-slate-400" : "text-slate-900"}>
+                  <span className={(row.reversedByLine && row.kind !== "PAYMENT") || fullyReturned(row) ? "text-slate-500 line-through decoration-slate-400" : "text-slate-900"}>
                     {row.description}
                   </span>
                   {undoesMoney(row) ? (
@@ -236,12 +236,10 @@ export function StatementCard({ view }: { view: View }) {
                   {row.returnedCents > 0 && (
                     <Badge tone="red">{fullyReturned(row) ? "Returned by the bank" : "Partly returned by the bank"}</Badge>
                   )}
-                  {row.reversedByLine &&
-                    (isMoney(row) ? (
-                      <Badge tone="red">Did not go through</Badge>
-                    ) : (
-                      <Badge tone="amber">Superseded by correction #{row.reversedBySeq}</Badge>
-                    ))}
+                  {row.reversedByLine && row.kind === "REFUND" && <Badge tone="red">Did not go through</Badge>}
+                  {row.reversedByLine && !isMoney(row) && (
+                    <Badge tone="amber">Superseded by correction #{row.reversedBySeq}</Badge>
+                  )}
                 </div>
                 <details className="mt-1 text-slate-600">
                   <summary className="cursor-pointer text-xs text-indigo-600 hover:text-indigo-500">
@@ -365,7 +363,7 @@ function RowExplanation({ row }: { row: StatementRow }) {
           </dd>
         </>
       )}
-      {row.reversedByLine && (
+      {row.reversedByLine && row.kind !== "PAYMENT" && (
         <>
           <dt className="text-slate-500">{isMoney(row) ? "Cancelled" : "Superseded"}</dt>
           <dd>

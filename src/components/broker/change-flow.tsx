@@ -71,13 +71,21 @@ export function useChangeFlow(policyId: string) {
   const confirm = (onSaved?: () => void) =>
     startTransition(async () => {
       if (!request || !preview) return;
+      const asked = generation.current;
       // The preview's fingerprint goes with the confirmation, so what is saved is what was shown.
       const result = await applyChangeAction(policyId, { ...request, reason: latestReason.current }, preview.fingerprint);
       if (result.ok) {
+        // Saved, as it was confirmed.
         reset();
         setDone(true);
         setNotice(result.notice ?? null);
         onSaved?.();
+        router.refresh();
+      } else if (asked !== generation.current) {
+        // Nothing was saved, and the form was changed while this was in flight, so the answer
+        // (an error, or new figures to confirm) is about inputs that are no longer on screen.
+        // Showing it would put the old change's figures beside the new inputs, with a Confirm
+        // button that has nothing to send. The form is left ready to preview what it shows now.
         router.refresh();
       } else if (result.preview) {
         // Nothing was saved. Show the new figures and ask again.

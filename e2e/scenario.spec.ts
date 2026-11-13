@@ -364,3 +364,48 @@ test("a preview is thrown away if the date was changed while it was loading", as
   await expect(broker.locator("#history-3")).toContainText("Cyber Liability now counts 14 more days");
 });
 
+test("a refused confirmation isn't shown if the form changed while it was in flight", async ({ browser }) => {
+  const { broker, holder } = await demoPolicy(browser);
+  await moveCyber(broker, -7);
+  await expect(balance(broker)).toHaveText("$14.00");
+
+  // The broker previews moving Cyber a second week earlier, while $14.00 is unpaid.
+  await broker.reload();
+  await broker.locator("#history").getByRole("button", { name: "Correct this" }).last().click();
+  const form = broker.locator('[data-testid^="correct-"]');
+  const date = form.locator('input[name="correctedDate"]');
+  const recorded = await date.inputValue();
+  const earlier = (days: number) => new Date(Date.parse(`${recorded}T00:00:00Z`) - days * 86_400_000).toISOString().slice(0, 10);
+  await date.fill(earlier(7));
+  await form.getByRole("button", { name: "Preview correction" }).click();
+  await expect(form.getByTestId("preview-after")).toHaveText("$28.00");
+
+  // The policyholder pays the $14.00, so the figures in that preview are out of date
+  // and the server will refuse to save it.
+  await holder.reload();
+  await payByCard(holder, CARD_OK);
+  await expect(balance(holder)).toHaveText("$0.00");
+
+  // The broker confirms, and changes the date again while the confirmation is in flight.
+  await broker.route("**/broker/policies/**", async (route) => {
+    if (route.request().method() === "POST") await new Promise((resolve) => setTimeout(resolve, 1_500));
+    await route.continue();
+  });
+  await form.getByRole("button", { name: "Confirm correction" }).click();
+  await date.fill(earlier(14));
+
+  // The refusal comes back with new figures for the first date. They aren't shown beside the
+  // second date. The form is left ready to preview what it shows now.
+  await expect(form.getByRole("button", { name: "Preview correction" })).toBeEnabled();
+  await expect(form.getByTestId("preview")).toHaveCount(0);
+  await broker.unroute("**/broker/policies/**");
+  await expect(balance(broker)).toHaveText("$0.00"); // nothing was saved, and the payment shows
+
+  // Previewing and confirming the date on screen works, and that date is what is saved.
+  await form.getByRole("button", { name: "Preview correction" }).click();
+  await expect(form.getByTestId("preview-after")).toHaveText("$28.00");
+  await form.getByRole("button", { name: "Confirm correction" }).click();
+  await expect(balance(broker)).toHaveText("$28.00");
+  await expect(broker.locator("#history-4")).toContainText("Cyber Liability now counts 14 more days");
+});
+
