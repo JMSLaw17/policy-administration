@@ -161,7 +161,7 @@ test("record the submission video", async ({ browser }) => {
       const date = form3.locator('input[name="correctedDate"]');
       await click(broker, date);
       await date.fill(weekFrom(recorded, 1));
-      await typeInto(broker, form3.locator('input[name="correctionReason"]'), "Coverage began a week later than first recorded");
+      await typeInto(broker, form3.locator('input[name="correctionReason"]'), "Coverage began two weeks later than last recorded");
     });
     await film.beat("refund-preview", async () => {
       await click(broker, form3.getByRole("button", { name: "Preview correction" }));
