@@ -19,6 +19,8 @@ The same references appear in all three places, which is the point. For example,
 
 A cancellation lines up the same way. Policy SBP-2026-0003 was cancelled with $1,615.00 to return, more than its newest payment covered, so the app split it newest payment first: $674.00 (`re_3UawoZ`) and $941.00 (`re_3UawoX`). Both appear in the app's database, in its integration log, and in Stripe as succeeded. The declined card on SBP-2026-0002 is there too: a failed payment of $1,095.00 in the app's database, and a `payment_intent.payment_failed` event in Stripe for the same amount seconds before the successful one.
 
+A payment taken back by the bank lines up too. On SBP-2026-0012 a $14.00 card payment was disputed and the dispute lost (`du_1Ub6Ok`). Stripe shows `charge.dispute.created`, `funds_withdrawn` and `closed` for it with no deliveries outstanding; the app's integration log has the same three events received against that policy; and its statement keeps the $14.00 payment and adds a "Payment returned by the bank" line, leaving $14.00 due.
+
 And for the signed application: the app's database has envelope `ea5b23f4` signed at 09:37:29 UTC on 2026-11-12 and policy SBP-2026-0002 issued from it; DocuSign's audit trail has the same envelope signed in-session at the same second; and DocuSign's delivery log shows `envelope-completed` sent to the app, which replied `{"received":true}`.
 
 ## The screenshots

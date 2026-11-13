@@ -37,6 +37,23 @@ function deployedPolicies() {
   return new Map(rows.map((r) => [r.id, r.policyNumber]));
 }
 
+/** The deployed app's Stripe payments, by PaymentIntent id. A dispute names its payment, not its policy. */
+function deployedPayments() {
+  if (!existsSync(".env.production.local")) return new Map();
+  const rows = JSON.parse(
+    execFileSync(
+      "node",
+      [
+        "scripts/prod-query.mjs",
+        "--json",
+        'select pay."stripePaymentIntentId" as intent, p.id as "policyId" from "Payment" pay join "Policy" p on p.id = pay."policyId" where pay."stripePaymentIntentId" is not null',
+      ],
+      { encoding: "utf8" },
+    ),
+  );
+  return new Map(rows.map((r) => [r.intent, r.policyId]));
+}
+
 async function stripeEvidence() {
   const key = process.env.STRIPE_SECRET_KEY;
   if (!key?.startsWith("sk_test_")) throw new Error("STRIPE_SECRET_KEY must be a test key");
@@ -47,18 +64,29 @@ async function stripeEvidence() {
   for await (const e of stripe.events.list({ limit: 100, types: [
     "payment_intent.succeeded", "payment_intent.payment_failed", "payment_intent.processing",
     "payment_intent.canceled", "refund.created", "refund.updated", "refund.failed",
+    "charge.dispute.created", "charge.dispute.funds_withdrawn", "charge.dispute.closed",
   ] })) {
+    // Every event Stripe still holds (it keeps 30 days), not just the newest few hundred:
+    // local and automated testing on the same account would otherwise push the deployed
+    // app's events off the end.
     events.push(e);
-    if (events.length >= 300) break;
+    if (events.length >= 20_000) break;
   }
-  const allRefunds = await stripe.refunds.list({ limit: 100 });
+  const allRefunds = { data: [] };
+  for await (const r of stripe.refunds.list({ limit: 100 })) {
+    allRefunds.data.push(r);
+    if (allRefunds.data.length >= 5_000) break;
+  }
 
   // One Stripe test account serves the deployed app, local development, and
   // the automated tests. Keep only what belongs to the deployed app, matched
   // by the policy id the app attaches to every payment and refund.
   const policies = deployedPolicies();
-  const mine = (o) => !policies || policies.has(o.metadata?.policyId);
-  const policyOf = (o) => policies?.get(o.metadata?.policyId) ?? o.metadata?.policyNumber ?? "";
+  const payments = deployedPayments();
+  // A payment or refund carries the policy id. A dispute carries only its payment.
+  const policyIdOf = (o) => o.metadata?.policyId ?? payments.get(typeof o.payment_intent === "string" ? o.payment_intent : "");
+  const mine = (o) => !policies || policies.has(policyIdOf(o));
+  const policyOf = (o) => policies?.get(policyIdOf(o)) ?? o.metadata?.policyNumber ?? "";
   const total = events.length;
   const kept = events.filter((e) => mine(e.data.object));
   const refunds = { data: allRefunds.data.filter(mine) };
